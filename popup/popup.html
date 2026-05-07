@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=380">
+  <title>AgentScribe</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 380px;
+      font-family: -apple-system, 'Segoe UI', Roboto, 'SF Mono', monospace;
+      background: #1a1a1a;
+      color: #f8f8f8;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid #333;
+      background: #222;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .header-left .logo {
+      width: 18px;
+      height: 18px;
+      background: #ef4444;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 800;
+      color: #fff;
+    }
+
+    .rec-badge {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #ef4444;
+      font-weight: 600;
+    }
+
+    .rec-badge.active { display: flex; }
+
+    .rec-badge .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .settings-btn {
+      background: none;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    .settings-btn:hover {
+      color: #f8f8f8;
+      background: #333;
+    }
+
+    .content { padding: 20px 16px; }
+
+    /* State: Idle */
+    .state-idle .btn-start {
+      width: 100%;
+      padding: 12px;
+      background: #ef4444;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s;
+    }
+
+    .btn-start:hover { background: #dc2626; }
+
+    .cdp-note {
+      margin-top: 12px;
+      padding: 8px 10px;
+      background: #2a2419;
+      border: 1px solid #5a4a20;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #d4b87a;
+      line-height: 1.4;
+    }
+
+    .dropped-warning {
+      margin-top: 8px;
+      padding: 6px 10px;
+      background: #2a1a1a;
+      border: 1px solid #5a2020;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #f87171;
+      display: none;
+    }
+
+    .dropped-warning.visible { display: block; }
+
+    .last-session {
+      margin-top: 16px;
+      padding: 12px;
+      background: #2d2d2d;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #aaa;
+    }
+
+    .last-session .label { color: #888; margin-bottom: 4px; }
+    .last-session .stats { color: #ccc; }
+
+    .btn-export-last {
+      width: 100%;
+      margin-top: 12px;
+      padding: 10px;
+      background: #2d2d2d;
+      color: #ccc;
+      border: 1px solid #444;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .btn-export-last:hover {
+      background: #333;
+      border-color: #666;
+      color: #fff;
+    }
+
+    /* State: Recording */
+    .state-recording { display: none; }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .stat-card {
+      text-align: center;
+      padding: 10px 4px;
+      background: #2d2d2d;
+      border-radius: 8px;
+    }
+
+    .stat-card .number {
+      font-size: 22px;
+      font-weight: 700;
+      color: #22c55e;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-card .label {
+      font-size: 10px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-top: 2px;
+    }
+
+    .last-event {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .last-event span { color: #aaa; }
+
+    .btn-stop {
+      width: 100%;
+      margin-top: 16px;
+      padding: 12px;
+      background: #333;
+      color: #ef4444;
+      border: 2px solid #ef4444;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s;
+    }
+
+    .btn-stop:hover { background: #3a2020; }
+
+    /* State: Export */
+    .state-export { display: none; }
+
+    .session-summary {
+      padding: 12px;
+      background: #2d2d2d;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 12px;
+    }
+
+    .session-summary .title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #22c55e;
+      margin-bottom: 6px;
+    }
+
+    .session-summary .detail { color: #aaa; }
+
+    .export-label {
+      font-size: 12px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+
+    .export-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .export-btn {
+      padding: 10px 8px;
+      background: #2d2d2d;
+      border: 1px solid #444;
+      border-radius: 8px;
+      color: #ccc;
+      font-size: 12px;
+      cursor: pointer;
+      text-align: center;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .export-btn:hover {
+      background: #383838;
+      border-color: #666;
+      color: #fff;
+    }
+
+    .export-btn .icon { font-size: 16px; display: block; margin-bottom: 4px; }
+
+    .export-btn.mcp-hidden { display: none; }
+
+    .btn-new-recording {
+      width: 100%;
+      padding: 12px;
+      background: #22c55e;
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s;
+    }
+
+    .btn-new-recording:hover { background: #16a34a; }
+
+    .no-session {
+      text-align: center;
+      color: #666;
+      padding: 20px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">AS</div>
+      <span>AgentScribe</span>
+    </div>
+    <div class="rec-badge" id="recBadge">
+      <span class="dot"></span>
+      <span>REC <span id="recTimer">0:00</span></span>
+    </div>
+    <button class="settings-btn" id="settingsBtn" title="Settings">&#9881;</button>
+  </div>
+
+  <!-- STATE: IDLE -->
+  <div class="content state-idle" id="stateIdle">
+    <button class="btn-start" id="btnStart">&#9679; START RECORDING</button>
+    <div class="cdp-note" id="cdpNote">
+      Chrome will show a yellow "started debugging" bar — leave it open.
+    </div>
+    <div class="last-session" id="lastSessionInfo" style="display:none">
+      <div class="label">Last session</div>
+      <div class="stats" id="lastSessionStats"></div>
+    </div>
+    <button class="btn-export-last" id="btnExportLast" style="display:none">EXPORT LAST SESSION</button>
+    <button class="btn-export-last" id="btnViewSessions" style="margin-top:8px">&#128194; VIEW ALL SESSIONS</button>
+  </div>
+
+  <!-- STATE: RECORDING -->
+  <div class="content state-recording" id="stateRecording">
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="number" id="domCount">0</div>
+        <div class="label">DOM Events</div>
+      </div>
+      <div class="stat-card">
+        <div class="number" id="netCount">0</div>
+        <div class="label">Network</div>
+      </div>
+      <div class="stat-card">
+        <div class="number" id="fieldCount">0</div>
+        <div class="label">Fields</div>
+      </div>
+    </div>
+    <div class="last-event">Last event: <span id="lastDomEvent">—</span></div>
+    <div class="last-event">Last API: <span id="lastNetEvent">—</span></div>
+    <div class="dropped-warning" id="droppedWarning">
+      &#9888; <span id="droppedCount">0</span> events dropped — event cap reached. Raise the cap or enable auto-export in Settings.
+    </div>
+    <button class="btn-stop" id="btnStop">&#9632; STOP RECORDING</button>
+  </div>
+
+  <!-- STATE: EXPORT -->
+  <div class="content state-export" id="stateExport">
+    <div class="session-summary">
+      <div class="title">Session complete</div>
+      <div class="detail" id="exportSummary"></div>
+    </div>
+    <div class="export-label">Export as:</div>
+    <div class="export-grid">
+      <button class="export-btn" data-format="json">
+        <span class="icon">&#128196;</span> Raw JSON
+      </button>
+      <button class="export-btn" data-format="playwright">
+        <span class="icon">&#127917;</span> Playwright
+      </button>
+      <button class="export-btn" data-format="postman">
+        <span class="icon">&#128238;</span> Postman
+      </button>
+      <button class="export-btn" data-format="sop">
+        <span class="icon">&#128203;</span> SOP Markdown
+      </button>
+      <button class="export-btn mcp-hidden" data-format="mcp" id="mcpExportBtn">
+        <span class="icon">&#128268;</span> MCP JSON
+      </button>
+    </div>
+    <button class="btn-new-recording" id="btnNewRecording">&#9679; START NEW RECORDING</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

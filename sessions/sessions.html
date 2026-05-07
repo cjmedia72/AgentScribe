@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentScribe — Sessions</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background: #111;
+      color: #e8e8e8;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    h1 .logo {
+      width: 28px; height: 28px;
+      background: #ef4444; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 800; color: #fff;
+    }
+
+    .subtitle { color: #888; font-size: 13px; }
+
+    .header-right {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      background: #2d2d2d;
+      border: 1px solid #444;
+      color: #ccc;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn:hover {
+      background: #383838;
+      border-color: #666;
+      color: #fff;
+    }
+
+    .btn-danger {
+      border-color: #5a2020;
+      color: #ef4444;
+    }
+
+    .btn-danger:hover {
+      background: #2a1515;
+      color: #fca5a5;
+    }
+
+    .stats-bar {
+      display: flex;
+      gap: 24px;
+      padding: 16px 20px;
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stats-bar .stat {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .stats-bar .stat .label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stats-bar .stat .value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #e8e8e8;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .session-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .session-card {
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
+      border-radius: 12px;
+      padding: 18px 20px;
+      transition: border-color 0.15s;
+    }
+
+    .session-card:hover {
+      border-color: #444;
+    }
+
+    .session-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .session-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .session-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-meta {
+      font-size: 12px;
+      color: #888;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+
+    .session-meta .meta-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .session-meta .meta-item strong {
+      color: #ccc;
+      font-weight: 600;
+    }
+
+    .session-url {
+      font-size: 11px;
+      color: #666;
+      margin-top: 4px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .export-group {
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      background: #0f0f0f;
+      border: 1px solid #2d2d2d;
+      border-radius: 8px;
+    }
+
+    .export-btn {
+      padding: 6px 10px;
+      background: transparent;
+      border: none;
+      color: #aaa;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .export-btn:hover {
+      background: #2d2d2d;
+      color: #fff;
+    }
+
+    .export-btn.mcp-hidden { display: none; }
+
+    .delete-btn {
+      width: 32px; height: 32px;
+      background: transparent;
+      border: 1px solid #2d2d2d;
+      color: #888;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    .delete-btn:hover {
+      background: #2a1515;
+      border-color: #5a2020;
+      color: #ef4444;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #666;
+    }
+
+    .empty-state .icon {
+      font-size: 36px;
+      margin-bottom: 12px;
+      opacity: 0.4;
+    }
+
+    .empty-state .title {
+      font-size: 16px;
+      color: #888;
+      margin-bottom: 6px;
+    }
+
+    .empty-state .hint {
+      font-size: 13px;
+      color: #555;
+    }
+
+    .session-card .toast {
+      display: none;
+      margin-top: 10px;
+      padding: 8px 12px;
+      background: #1a2419;
+      border: 1px solid #2a4a20;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #86efac;
+    }
+
+    .session-card .toast.visible { display: block; }
+
+    @media (max-width: 720px) {
+      .session-row { flex-direction: column; align-items: stretch; }
+      .session-actions { justify-content: space-between; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-left">
+        <h1><span class="logo">AS</span> Sessions</h1>
+      </div>
+      <div class="header-right">
+        <a href="../popup/popup.html" class="btn" id="backBtn">&larr; Back</a>
+        <button class="btn btn-danger" id="clearAllBtn">Clear All</button>
+      </div>
+    </div>
+    <div class="subtitle" style="margin-bottom: 20px;">All recorded sessions, newest first. Up to 20 sessions are retained.</div>
+
+    <div class="stats-bar" id="statsBar">
+      <div class="stat">
+        <div class="label">Sessions</div>
+        <div class="value" id="totalSessions">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Total Events</div>
+        <div class="value" id="totalEvents">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Total API Calls</div>
+        <div class="value" id="totalApi">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Storage</div>
+        <div class="value" id="storageUsed">—</div>
+      </div>
+    </div>
+
+    <div class="session-list" id="sessionList"></div>
+  </div>
+
+  <script src="sessions.js"></script>
+</body>
+</html>

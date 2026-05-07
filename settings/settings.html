@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentScribe — Settings</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background: #111;
+      color: #e8e8e8;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    h1 .logo {
+      width: 28px; height: 28px;
+      background: #ef4444; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 800; color: #fff;
+    }
+
+    .subtitle { color: #888; font-size: 13px; margin-bottom: 32px; }
+
+    .section {
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .section h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #fff;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2d2d2d;
+    }
+
+    .field {
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .field:last-child { margin-bottom: 0; }
+
+    .field-label {
+      flex: 1;
+      font-size: 13px;
+    }
+
+    .field-label .hint {
+      display: block;
+      font-size: 11px;
+      color: #666;
+      margin-top: 2px;
+    }
+
+    .field-label .warning {
+      color: #ef4444;
+      font-weight: 600;
+    }
+
+    input[type="text"],
+    input[type="number"] {
+      background: #222;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #e8e8e8;
+      font-size: 13px;
+      width: 200px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus,
+    input[type="number"]:focus {
+      border-color: #3b82f6;
+    }
+
+    textarea {
+      background: #222;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #e8e8e8;
+      font-size: 12px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      width: 100%;
+      min-height: 80px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    textarea:focus { border-color: #3b82f6; }
+
+    select {
+      background: #222;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #e8e8e8;
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .toggle input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #333;
+      border-radius: 24px;
+      transition: background 0.2s;
+    }
+
+    .toggle .slider::before {
+      content: '';
+      position: absolute;
+      width: 18px; height: 18px;
+      left: 3px; bottom: 3px;
+      background: #888;
+      border-radius: 50%;
+      transition: transform 0.2s, background 0.2s;
+    }
+
+    .toggle input:checked + .slider {
+      background: #22c55e;
+    }
+
+    .toggle input:checked + .slider::before {
+      transform: translateX(20px);
+      background: #fff;
+    }
+
+    .field-full {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .field-full textarea { margin-top: 8px; }
+
+    .storage-info {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      background: #222;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .storage-info .usage {
+      font-size: 13px;
+      color: #aaa;
+    }
+
+    .storage-info .usage strong {
+      color: #e8e8e8;
+    }
+
+    .btn-danger {
+      padding: 10px 20px;
+      background: transparent;
+      border: 1px solid #ef4444;
+      color: #ef4444;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-danger:hover {
+      background: #2a1515;
+    }
+
+    .btn-secondary {
+      padding: 10px 20px;
+      background: #2d2d2d;
+      border: 1px solid #444;
+      color: #ccc;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-secondary:hover {
+      background: #383838;
+    }
+
+    .storage-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .save-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #1a1a1a;
+      border-top: 1px solid #333;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+      z-index: 100;
+    }
+
+    .save-bar .status {
+      flex: 1;
+      font-size: 12px;
+      color: #22c55e;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .save-bar .status.visible { opacity: 1; }
+
+    .btn-save {
+      padding: 10px 24px;
+      background: #3b82f6;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-save:hover { background: #2563eb; }
+
+    .spacer { height: 60px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1><span class="logo">AS</span> AgentScribe Settings</h1>
+    <p class="subtitle">Configure recording behavior, capture options, and storage.</p>
+
+    <!-- General -->
+    <div class="section">
+      <h2>General</h2>
+      <div class="field">
+        <div class="field-label">
+          Session name prefix
+          <span class="hint">Prepended to each session name</span>
+        </div>
+        <input type="text" id="sessionNamePrefix" value="AgentScribe Session">
+      </div>
+      <div class="field">
+        <div class="field-label">
+          Max events per session
+          <span class="hint">Leave blank for uncapped</span>
+        </div>
+        <input type="number" id="maxEvents" min="1" placeholder="Uncapped">
+      </div>
+      <div class="field">
+        <div class="field-label">
+          Auto-export on cap reached
+          <span class="hint">Exports JSON and starts new segment</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="autoExportOnCap">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Capture -->
+    <div class="section">
+      <h2>Capture</h2>
+      <div class="field">
+        <div class="field-label">Capture scroll events</div>
+        <label class="toggle">
+          <input type="checkbox" id="captureScrolls" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="field">
+        <div class="field-label">Capture focus/blur events</div>
+        <label class="toggle">
+          <input type="checkbox" id="captureFocusBlur" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="field">
+        <div class="field-label">
+          Log sensitive field values
+          <span class="hint warning">WARNING: Disables [REDACTED] on passwords, credit cards, etc.</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="logSensitiveValues">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="field">
+        <div class="field-label">
+          Network capture method
+          <span class="hint">CDP captures response bodies. webRequest is a fallback.</span>
+        </div>
+        <select id="networkMethod">
+          <option value="cdp">CDP (recommended)</option>
+          <option value="webrequest">webRequest (fallback)</option>
+          <option value="both">Both</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Advanced -->
+    <div class="section">
+      <h2>Advanced</h2>
+      <div class="field">
+        <div class="field-label">
+          MCP Export enabled
+          <span class="hint">Shows MCP JSON export option in the popup</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="mcpExportEnabled">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="field">
+        <div class="field-label">
+          Correlation window (ms)
+          <span class="hint">Max time between DOM event and network request to correlate</span>
+        </div>
+        <input type="number" id="correlationWindowMs" value="1000" min="100" max="5000">
+      </div>
+      <div class="field field-full">
+        <div class="field-label">
+          Analytics filter domains
+          <span class="hint">One per line. Requests matching these are classified as analytics.</span>
+        </div>
+        <textarea id="analyticsFilterDomains"></textarea>
+      </div>
+    </div>
+
+    <!-- Storage -->
+    <div class="section">
+      <h2>Storage</h2>
+      <div class="storage-info">
+        <div class="usage">Current usage: <strong id="storageUsed">calculating...</strong></div>
+      </div>
+      <div class="storage-actions">
+        <button class="btn-secondary" id="btnViewSessions">&#128194; Manage Sessions</button>
+        <button class="btn-secondary" id="btnExportAll">Export All as JSON</button>
+        <button class="btn-danger" id="btnClearSessions">Clear All Sessions</button>
+      </div>
+    </div>
+
+    <div class="spacer"></div>
+  </div>
+
+  <div class="save-bar">
+    <div class="status" id="saveStatus">Settings saved</div>
+    <button class="btn-save" id="btnSave">Save Settings</button>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

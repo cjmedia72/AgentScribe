@@ -1,4 +1,5 @@
 import { correlate } from './correlation-engine.js';
+import { inferSessionName, inferStartName } from './session-namer.js';
 
 // --- State (module-scope; rehydrated on SW wake) ---
 
@@ -426,7 +427,7 @@ async function startRecording(tabId) {
   sessionBuffer = {
     id: crypto.randomUUID(),
     version: '1.0',
-    name: `${settings.sessionNamePrefix} ${new Date().toLocaleString()}`,
+    name: inferStartName(tab.url),
     startTime: Date.now(),
     endTime: null,
     startUrl: tab.url,
@@ -511,6 +512,14 @@ async function _stopRecordingImpl() {
   sessionBuffer.networkEvents = result.networkEvents;
   sessionBuffer.endTime = Date.now();
   sessionBuffer.eventCount = sessionBuffer.events.length;
+
+  // Smart name inferred from captured events — runs AFTER correlation so
+  // triggeredRequests are populated and search terms / button clicks are present.
+  try {
+    sessionBuffer.name = inferSessionName(sessionBuffer);
+  } catch (e) {
+    console.warn('[AgentScribe] Name inference failed, keeping placeholder:', e);
+  }
 
   const uniqueEndpoints = new Set();
   sessionBuffer.networkEvents.forEach(n => {

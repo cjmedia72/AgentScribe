@@ -3,7 +3,7 @@ import { exportPlaywright } from '../exporters/playwright-exporter.js';
 import { exportPostman } from '../exporters/postman-exporter.js';
 import { exportSOP } from '../exporters/sop-exporter.js';
 import { exportMCP } from '../exporters/mcp-exporter.js';
-import { exportBundle } from '../exporters/bundle-exporter.js';
+import { exportBundle, exportBundleLean } from '../exporters/bundle-exporter.js';
 
 const sessionList = document.getElementById('sessionList');
 const searchInput = document.getElementById('searchInput');
@@ -177,7 +177,7 @@ async function copyBundleToClipboard(sessionId, card) {
   const toast = card.querySelector('.toast');
   const buttons = card.querySelectorAll('.export-btn, .bundle-btn, .clipboard-btn, .delete-btn');
   buttons.forEach(b => b.disabled = true);
-  toast.textContent = 'Building bundle...';
+  toast.textContent = 'Building lean bundle...';
   toast.classList.add('visible');
   toast.style.color = '';
 
@@ -186,10 +186,14 @@ async function copyBundleToClipboard(sessionId, card) {
     const session = (stored.completedSessions || []).find(s => s.id === sessionId);
     if (!session) throw new Error('Session not found in storage');
 
-    const result = exportBundle(session);
+    // LEAN bundle for clipboard — full bundle crashes Claude Desktop on paste
+    const result = exportBundleLean(session);
+    const sizeKb = result.content.length / 1024;
+    if (sizeKb > 500) {
+      throw new Error(`Bundle too big for safe paste (${sizeKb.toFixed(0)} KB). Use BUNDLE download instead.`);
+    }
     await navigator.clipboard.writeText(result.content);
-    const sizeKb = (result.content.length / 1024).toFixed(1);
-    toast.textContent = `Copied to clipboard (${sizeKb} KB) — paste into your agent`;
+    toast.textContent = `Copied lean bundle (${sizeKb.toFixed(1)} KB) — paste into your agent`;
     toast.style.color = '#86efac';
   } catch (e) {
     console.error('[AgentScribe] Clipboard error:', e);

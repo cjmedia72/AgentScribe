@@ -3,7 +3,7 @@ import { exportPlaywright } from '../exporters/playwright-exporter.js';
 import { exportPostman } from '../exporters/postman-exporter.js';
 import { exportSOP } from '../exporters/sop-exporter.js';
 import { exportMCP } from '../exporters/mcp-exporter.js';
-import { exportBundle } from '../exporters/bundle-exporter.js';
+import { exportBundle, exportBundleLean } from '../exporters/bundle-exporter.js';
 
 const stateIdle = document.getElementById('stateIdle');
 const stateRecording = document.getElementById('stateRecording');
@@ -190,10 +190,15 @@ if (btnClipboard) {
       const stored = await chrome.storage.local.get('lastSession');
       const session = stored.lastSession;
       if (!session) throw new Error('No session found');
-      const result = exportBundle(session);
+      // LEAN bundle for clipboard — full bundle crashes Claude Desktop on paste
+      const result = exportBundleLean(session);
+      const sizeKb = result.content.length / 1024;
+      if (sizeKb > 500) {
+        showClipboardToast(`Bundle is ${sizeKb.toFixed(0)} KB — too big for safe paste. Use file download instead.`, true);
+        return;
+      }
       await navigator.clipboard.writeText(result.content);
-      const sizeKb = (result.content.length / 1024).toFixed(1);
-      showClipboardToast(`Copied bundle to clipboard (${sizeKb} KB) — paste into your agent`, false);
+      showClipboardToast(`Copied lean bundle (${sizeKb.toFixed(1)} KB) — paste into your agent`, false);
     } catch (e) {
       console.error('[AgentScribe] Clipboard error:', e);
       showClipboardToast(`Copy failed: ${e.message || e}`, true);

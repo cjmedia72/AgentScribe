@@ -3,7 +3,7 @@ import { exportPlaywright } from '../exporters/playwright-exporter.js';
 import { exportPostman } from '../exporters/postman-exporter.js';
 import { exportSOP } from '../exporters/sop-exporter.js';
 import { exportMCP } from '../exporters/mcp-exporter.js';
-import { exportBundle, exportBundleLean } from '../exporters/bundle-exporter.js';
+import { exportBundle, exportBundleLean, buildShimText } from '../exporters/bundle-exporter.js';
 
 const stateIdle = document.getElementById('stateIdle');
 const stateRecording = document.getElementById('stateRecording');
@@ -190,23 +190,58 @@ if (btnClipboard) {
       const stored = await chrome.storage.local.get('lastSession');
       const session = stored.lastSession;
       if (!session) throw new Error('No session found');
-      // LEAN bundle for clipboard — full bundle crashes Claude Desktop on paste
-      const result = exportBundleLean(session);
-      const sizeKb = result.content.length / 1024;
-      if (sizeKb > 500) {
-        showClipboardToast(`Bundle is ${sizeKb.toFixed(0)} KB — too big for safe paste. Use file download instead.`, true);
-        return;
-      }
-      await navigator.clipboard.writeText(result.content);
-      showClipboardToast(`Copied lean bundle (${sizeKb.toFixed(1)} KB) — paste into your agent`, false);
+      const result = await saveBundleAndCopyShim(session);
+      showClipboardToast(`Saved bundle + copied shim (${result.shimKb} KB clipboard). Paste into your agent.`, false);
     } catch (e) {
-      console.error('[AgentScribe] Clipboard error:', e);
-      showClipboardToast(`Copy failed: ${e.message || e}`, true);
+      console.error('[AgentScribe] Shim error:', e);
+      showClipboardToast(`Shim failed: ${e.message || e}`, true);
     }
     setTimeout(() => {
       btnClipboard.style.opacity = '1';
       btnClipboard.style.pointerEvents = 'auto';
-    }, 1000);
+    }, 1500);
+  });
+}
+
+// Save full bundle to disk + copy shim (path + instructions) to clipboard.
+// Agent reads the file directly — no big paste, no crash.
+async function saveBundleAndCopyShim(session) {
+  const full = exportBundle(session);
+  const blob = new Blob([full.content], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const subpath = `AgentScribe/sessions/${full.filename}`;
+
+  const downloadId = await new Promise((resolve, reject) => {
+    chrome.downloads.download({ url, filename: subpath, saveAs: false }, (id) => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(id);
+    });
+  });
+
+  // Wait for completion so we get the resolved absolute filename
+  const info = await waitForDownload(downloadId);
+  URL.revokeObjectURL(url);
+  const absolutePath = info?.filename || `<Downloads>/${subpath}`;
+
+  const shim = buildShimText(session, absolutePath);
+  await navigator.clipboard.writeText(shim);
+
+  return { absolutePath, shimKb: (shim.length / 1024).toFixed(1) };
+}
+
+function waitForDownload(downloadId, maxMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const tick = () => {
+      chrome.downloads.search({ id: downloadId }, (results) => {
+        const item = results?.[0];
+        if (item?.state === 'complete') return resolve(item);
+        if (item?.state === 'interrupted') return reject(new Error('Download interrupted'));
+        if (Date.now() - start > maxMs) return reject(new Error('Download timed out'));
+        setTimeout(tick, 100);
+      });
+    };
+    tick();
   });
 }
 

@@ -3,7 +3,7 @@ import { exportPlaywright } from '../exporters/playwright-exporter.js';
 import { exportPostman } from '../exporters/postman-exporter.js';
 import { exportSOP } from '../exporters/sop-exporter.js';
 import { exportMCP } from '../exporters/mcp-exporter.js';
-import { exportBundle, exportBundleLean } from '../exporters/bundle-exporter.js';
+import { exportBundle, exportBundleLean, buildShimText } from '../exporters/bundle-exporter.js';
 
 const sessionList = document.getElementById('sessionList');
 const searchInput = document.getElementById('searchInput');
@@ -175,9 +175,9 @@ async function exportSession(sessionId, format, card) {
 
 async function copyBundleToClipboard(sessionId, card) {
   const toast = card.querySelector('.toast');
-  const buttons = card.querySelectorAll('.export-btn, .bundle-btn, .clipboard-btn, .delete-btn');
+  const buttons = card.querySelectorAll('.export-btn, .bundle-btn, .clipboard-btn, .delete-btn, .preview-btn');
   buttons.forEach(b => b.disabled = true);
-  toast.textContent = 'Building lean bundle...';
+  toast.textContent = 'Saving bundle + building shim...';
   toast.classList.add('visible');
   toast.style.color = '';
 
@@ -186,26 +186,60 @@ async function copyBundleToClipboard(sessionId, card) {
     const session = (stored.completedSessions || []).find(s => s.id === sessionId);
     if (!session) throw new Error('Session not found in storage');
 
-    // LEAN bundle for clipboard — full bundle crashes Claude Desktop on paste
-    const result = exportBundleLean(session);
-    const sizeKb = result.content.length / 1024;
-    if (sizeKb > 500) {
-      throw new Error(`Bundle too big for safe paste (${sizeKb.toFixed(0)} KB). Use BUNDLE download instead.`);
-    }
-    await navigator.clipboard.writeText(result.content);
-    toast.textContent = `Copied lean bundle (${sizeKb.toFixed(1)} KB) — paste into your agent`;
+    const result = await saveBundleAndCopyShim(session);
+    toast.textContent = `Saved bundle + copied shim (${result.shimKb} KB). Paste into your agent — it'll read the file.`;
     toast.style.color = '#86efac';
   } catch (e) {
-    console.error('[AgentScribe] Clipboard error:', e);
-    toast.textContent = `Copy failed: ${e.message || e}`;
+    console.error('[AgentScribe] Shim error:', e);
+    toast.textContent = `Shim failed: ${e.message || e}`;
     toast.style.color = '#f87171';
   } finally {
     setTimeout(() => {
       toast.classList.remove('visible');
       toast.style.color = '';
       buttons.forEach(b => b.disabled = false);
-    }, 3000);
+    }, 4000);
   }
+}
+
+// Save full bundle to disk + copy shim with path to clipboard.
+async function saveBundleAndCopyShim(session) {
+  const full = exportBundle(session);
+  const blob = new Blob([full.content], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const subpath = `AgentScribe/sessions/${full.filename}`;
+
+  const downloadId = await new Promise((resolve, reject) => {
+    chrome.downloads.download({ url, filename: subpath, saveAs: false }, (id) => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(id);
+    });
+  });
+
+  const info = await waitForDownload(downloadId);
+  URL.revokeObjectURL(url);
+  const absolutePath = info?.filename || `<Downloads>/${subpath}`;
+
+  const shim = buildShimText(session, absolutePath);
+  await navigator.clipboard.writeText(shim);
+
+  return { absolutePath, shimKb: (shim.length / 1024).toFixed(1) };
+}
+
+function waitForDownload(downloadId, maxMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const tick = () => {
+      chrome.downloads.search({ id: downloadId }, (results) => {
+        const item = results?.[0];
+        if (item?.state === 'complete') return resolve(item);
+        if (item?.state === 'interrupted') return reject(new Error('Download interrupted'));
+        if (Date.now() - start > maxMs) return reject(new Error('Download timed out'));
+        setTimeout(tick, 100);
+      });
+    };
+    tick();
+  });
 }
 
 function runExporter(format, session) {

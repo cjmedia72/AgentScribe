@@ -98,6 +98,52 @@ export function exportBundleLean(session) {
   };
 }
 
+// Shim text — ~1.5KB clipboard payload pointing the receiving agent to the
+// full bundle file on disk. Use when the agent has filesystem access
+// (Claude Code, Claude Desktop with Filesystem MCP, Cursor, etc.).
+export function buildShimText(session, absolutePath) {
+  const dur = Math.round(((session.endTime || Date.now()) - session.startTime) / 1000);
+  const stats = `${session.events?.length || 0} DOM events · ${session.networkEvents?.length || 0} API calls · ${session.injectableFields?.length || 0} injectable fields`;
+  return `# AgentScribe Session Handoff
+
+Session: ${session.name}
+URL: ${session.startUrl}
+Recorded: ${new Date(session.startTime).toLocaleString()}
+Duration: ${dur}s
+Stats: ${stats}
+
+## Full bundle file (on this machine):
+${absolutePath}
+
+The full bundle — raw session events, every captured API call with payloads and response bodies, plus all 5 export formats (Raw JSON, Playwright, Postman, SOP, MCP) — is saved at the path above.
+
+## For the receiving agent:
+
+If you have filesystem access (Claude Code, Claude Desktop with Filesystem MCP, Cursor, etc.):
+- READ the file at the path above directly.
+- Do NOT ask the user to paste the contents — the file exists, just read it.
+
+If you don't have filesystem access:
+- Ask the user to download a different format (Raw JSON, Playwright, etc.) and paste it.
+
+## What's in the bundle:
+- \`_meta\` — session info, stats, agent usage notes
+- \`raw_session\` — every DOM event + every network call with payloads + response bodies
+- \`mcp_output.api_map\` — the actionable list of API endpoints the user's actions fired (start here for automation)
+- \`mcp_output.steps\` — the user's action sequence
+- \`raw_session.injectableFields\` — form fields mapped to POST param names (use for parameterizing the workflow over a list of inputs)
+- \`playwright_script\` — runnable JS for browser-based replay
+- \`postman_collection\` — importable into Postman directly
+- \`sop_markdown\` — human-readable workflow walkthrough
+
+## To automate this workflow at scale:
+1. READ the file above to get the full bundle.
+2. Use \`mcp_output.api_map\` to identify the highest-leverage endpoint (typically a POST/PUT/DELETE matching the user's intent).
+3. Use \`raw_session.injectableFields\` to know which inputs to parameterize.
+4. Generate a script that loops over the user's target inputs and hits those APIs directly — bypass the UI entirely.
+`;
+}
+
 function buildMeta(session, variant) {
   return {
     schema: variant === 'lean' ? 'agentscribe-bundle-lean' : 'agentscribe-bundle',

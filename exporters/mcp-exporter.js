@@ -51,11 +51,11 @@ export function exportMCP(session) {
     }))
   };
 
-  const content = JSON.stringify(output, null, 2);
-  const blob = new Blob([content], { type: 'application/json' });
-  const filename = `agentscribe-mcp-${Date.now()}.json`;
-  downloadBlob(blob, filename);
-  return { filename, size: blob.size };
+  return {
+    content: JSON.stringify(output, null, 2),
+    filename: `agentscribe-mcp-${Date.now()}.json`,
+    mimeType: 'application/json'
+  };
 }
 
 function describeEvent(e) {
@@ -98,9 +98,3 @@ function isAnalytics(n) {
   return domains.some(d => (n.url || '').toLowerCase().includes(d));
 }
 
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: true }, () => {
-    URL.revokeObjectURL(url);
-  });
-}

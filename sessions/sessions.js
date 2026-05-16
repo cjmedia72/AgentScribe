@@ -93,7 +93,7 @@ async function exportSession(sessionId, format, card) {
   const toast = card.querySelector('.toast');
   const buttons = card.querySelectorAll('.export-btn, .delete-btn');
   buttons.forEach(b => b.disabled = true);
-  toast.textContent = `Exporting ${format.toUpperCase()}...`;
+  toast.textContent = `Generating ${format.toUpperCase()}...`;
   toast.classList.add('visible');
 
   const result = await sendMessage({ type: 'EXPORT', format, sessionId });
@@ -101,11 +101,13 @@ async function exportSession(sessionId, format, card) {
   if (result?.error) {
     toast.textContent = `Error: ${result.error}`;
     toast.style.color = '#f87171';
-  } else if (result?.filename) {
-    toast.textContent = `Exported: ${result.filename}`;
+  } else if (result?.content && result?.filename) {
+    triggerDownload(result.content, result.filename, result.mimeType);
+    toast.textContent = `Downloaded: ${result.filename}`;
     toast.style.color = '#86efac';
   } else {
-    toast.textContent = 'Export complete';
+    toast.textContent = 'Export failed — no content returned';
+    toast.style.color = '#f87171';
   }
 
   setTimeout(() => {
@@ -113,6 +115,18 @@ async function exportSession(sessionId, format, card) {
     toast.style.color = '';
     buttons.forEach(b => b.disabled = false);
   }, 2500);
+}
+
+function triggerDownload(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
 async function deleteSession(sessionId) {

@@ -57,11 +57,11 @@ export function exportPlaywright(session) {
   lines.push(`  await browser.close();`);
   lines.push(`})();`);
 
-  const content = lines.join('\n');
-  const blob = new Blob([content], { type: 'application/javascript' });
-  const filename = `agentscribe-playwright-${Date.now()}.js`;
-  downloadBlob(blob, filename);
-  return { filename, size: blob.size };
+  return {
+    content: lines.join('\n'),
+    filename: `agentscribe-playwright-${Date.now()}.js`,
+    mimeType: 'application/javascript'
+  };
 }
 
 function bestSelector(element) {
@@ -96,9 +96,3 @@ function formatTime(ms) {
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: true }, () => {
-    URL.revokeObjectURL(url);
-  });
-}

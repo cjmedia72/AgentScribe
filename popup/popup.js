@@ -143,6 +143,11 @@ document.querySelectorAll('.export-btn').forEach(btn => {
     btn.style.pointerEvents = 'none';
 
     const result = await sendMessage({ type: 'EXPORT', format });
+    if (result && result.content && result.filename) {
+      triggerDownload(result.content, result.filename, result.mimeType);
+    } else if (result?.error) {
+      console.error('[AgentScribe] Export error:', result.error);
+    }
 
     setTimeout(() => {
       btn.style.opacity = '1';
@@ -150,6 +155,18 @@ document.querySelectorAll('.export-btn').forEach(btn => {
     }, 1000);
   });
 });
+
+function triggerDownload(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
 
 // --- Settings ---
 

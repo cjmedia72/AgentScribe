@@ -40,11 +40,11 @@ export function exportPostman(session) {
     }))
   };
 
-  const content = JSON.stringify(collection, null, 2);
-  const blob = new Blob([content], { type: 'application/json' });
-  const filename = `agentscribe-postman-${Date.now()}.json`;
-  downloadBlob(blob, filename);
-  return { filename, size: blob.size };
+  return {
+    content: JSON.stringify(collection, null, 2),
+    filename: `agentscribe-postman-${Date.now()}.json`,
+    mimeType: 'application/json'
+  };
 }
 
 function deduplicateEndpoints(networkEvents) {
@@ -99,9 +99,3 @@ function statusText(code) {
   return map[code] || String(code);
 }
 
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: true }, () => {
-    URL.revokeObjectURL(url);
-  });
-}

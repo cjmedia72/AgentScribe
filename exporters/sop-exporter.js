@@ -84,11 +84,11 @@ export function exportSOP(session) {
     lines.push('');
   }
 
-  const content = lines.join('\n');
-  const blob = new Blob([content], { type: 'text/markdown' });
-  const filename = `agentscribe-sop-${Date.now()}.md`;
-  downloadBlob(blob, filename);
-  return { filename, size: blob.size };
+  return {
+    content: lines.join('\n'),
+    filename: `agentscribe-sop-${Date.now()}.md`,
+    mimeType: 'text/markdown'
+  };
 }
 
 function describeAction(event) {
@@ -139,9 +139,3 @@ function formatTime(ms) {
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: true }, () => {
-    URL.revokeObjectURL(url);
-  });
-}

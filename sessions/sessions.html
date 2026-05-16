@@ -224,6 +224,24 @@
 
     .export-btn.mcp-hidden { display: none; }
 
+    .bundle-btn {
+      padding: 7px 14px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      transition: opacity 0.15s, transform 0.1s;
+      flex-shrink: 0;
+    }
+
+    .bundle-btn:hover { opacity: 0.92; }
+    .bundle-btn:active { transform: scale(0.97); }
+    .bundle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
     .delete-btn {
       width: 32px; height: 32px;
       background: transparent;

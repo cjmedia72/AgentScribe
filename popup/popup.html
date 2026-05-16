@@ -283,6 +283,24 @@
 
     .export-btn.mcp-hidden { display: none; }
 
+    .btn-bundle {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.3px;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+
+    .btn-bundle:hover { opacity: 0.92; }
+    .btn-bundle:active { transform: scale(0.98); }
+
     .btn-new-recording {
       width: 100%;
       padding: 12px;
@@ -368,6 +386,9 @@
       <div class="detail" id="exportSummary"></div>
     </div>
     <div class="export-label">Export as:</div>
+    <button class="btn-bundle" data-format="bundle">
+      &#129302; BUNDLE FOR AGENT (all formats, 1 file)
+    </button>
     <div class="export-grid">
       <button class="export-btn" data-format="json">
         <span class="icon">&#128196;</span> Raw JSON

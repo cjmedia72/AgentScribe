@@ -3,6 +3,7 @@ import { exportPlaywright } from '../exporters/playwright-exporter.js';
 import { exportPostman } from '../exporters/postman-exporter.js';
 import { exportSOP } from '../exporters/sop-exporter.js';
 import { exportMCP } from '../exporters/mcp-exporter.js';
+import { exportBundle } from '../exporters/bundle-exporter.js';
 
 const stateIdle = document.getElementById('stateIdle');
 const stateRecording = document.getElementById('stateRecording');
@@ -141,6 +142,28 @@ btnExportLast.addEventListener('click', async () => {
 });
 
 // --- Export ---
+
+// Bundle-for-agent button — single tap, all formats packed into one JSON
+document.querySelectorAll('.btn-bundle').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    btn.style.opacity = '0.5';
+    btn.style.pointerEvents = 'none';
+    try {
+      const stored = await chrome.storage.local.get('lastSession');
+      const session = stored.lastSession;
+      if (!session) throw new Error('No session found');
+      const result = exportBundle(session);
+      triggerDownload(result.content, result.filename, result.mimeType);
+    } catch (e) {
+      console.error('[AgentScribe] Bundle error:', e);
+      alert(`Bundle failed: ${e.message || e}`);
+    }
+    setTimeout(() => {
+      btn.style.opacity = '1';
+      btn.style.pointerEvents = 'auto';
+    }, 1000);
+  });
+});
 
 document.querySelectorAll('.export-btn').forEach(btn => {
   btn.addEventListener('click', async () => {

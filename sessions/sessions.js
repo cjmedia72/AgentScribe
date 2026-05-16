@@ -3,6 +3,7 @@ import { exportPlaywright } from '../exporters/playwright-exporter.js';
 import { exportPostman } from '../exporters/postman-exporter.js';
 import { exportSOP } from '../exporters/sop-exporter.js';
 import { exportMCP } from '../exporters/mcp-exporter.js';
+import { exportBundle } from '../exporters/bundle-exporter.js';
 
 const sessionList = document.getElementById('sessionList');
 const totalSessions = document.getElementById('totalSessions');
@@ -73,6 +74,7 @@ function buildCard(session) {
         <div class="session-url">${escapeHtml(session.startUrl || '')}</div>
       </div>
       <div class="session-actions">
+        <button class="bundle-btn" data-format="bundle" title="All formats in one JSON file — hand to an agent">&#129302; BUNDLE</button>
         <div class="export-group">
           <button class="export-btn" data-format="json" title="Raw JSON">JSON</button>
           <button class="export-btn" data-format="playwright" title="Playwright script">PW</button>
@@ -90,6 +92,10 @@ function buildCard(session) {
     btn.addEventListener('click', () => exportSession(session.id, btn.dataset.format, card));
   });
 
+  card.querySelector('.bundle-btn')?.addEventListener('click', () => {
+    exportSession(session.id, 'bundle', card);
+  });
+
   card.querySelector('.delete-btn').addEventListener('click', () => deleteSession(session.id));
 
   return card;
@@ -97,7 +103,7 @@ function buildCard(session) {
 
 async function exportSession(sessionId, format, card) {
   const toast = card.querySelector('.toast');
-  const buttons = card.querySelectorAll('.export-btn, .delete-btn');
+  const buttons = card.querySelectorAll('.export-btn, .bundle-btn, .delete-btn');
   buttons.forEach(b => b.disabled = true);
   toast.textContent = `Generating ${format.toUpperCase()}...`;
   toast.classList.add('visible');
@@ -135,6 +141,7 @@ function runExporter(format, session) {
     case 'postman':    return exportPostman(session);
     case 'sop':        return exportSOP(session);
     case 'mcp':        return exportMCP(session);
+    case 'bundle':     return exportBundle(session);
     default:           return null;
   }
 }

@@ -36,6 +36,12 @@
     }
   },
   "options_page": "settings/settings.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["sessions/sessions.html", "popup/popup.html", "settings/settings.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "commands": {
     "toggle-recording": {
       "suggested_key": {

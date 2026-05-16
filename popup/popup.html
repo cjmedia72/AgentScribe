@@ -301,6 +301,46 @@
     .btn-bundle:hover { opacity: 0.92; }
     .btn-bundle:active { transform: scale(0.98); }
 
+    .bundle-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .bundle-row .btn-bundle {
+      flex: 1;
+      margin-bottom: 0;
+    }
+
+    .btn-clipboard {
+      width: 44px;
+      background: #2d2d2d;
+      border: 1px solid #444;
+      color: #ccc;
+      border-radius: 8px;
+      font-size: 18px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .btn-clipboard:hover {
+      background: #383838;
+      border-color: #666;
+      color: #fff;
+    }
+
+    .clipboard-toast {
+      font-size: 11px;
+      color: #86efac;
+      margin-bottom: 12px;
+      min-height: 14px;
+      transition: opacity 0.2s;
+      opacity: 0;
+    }
+
+    .clipboard-toast.visible { opacity: 1; }
+    .clipboard-toast.error { color: #f87171; }
+
     .btn-new-recording {
       width: 100%;
       padding: 12px;
@@ -386,9 +426,15 @@
       <div class="detail" id="exportSummary"></div>
     </div>
     <div class="export-label">Export as:</div>
-    <button class="btn-bundle" data-format="bundle">
-      &#129302; BUNDLE FOR AGENT (all formats, 1 file)
-    </button>
+    <div class="bundle-row">
+      <button class="btn-bundle" data-format="bundle">
+        &#129302; BUNDLE FOR AGENT
+      </button>
+      <button class="btn-clipboard" id="btnClipboard" title="Copy bundle to clipboard">
+        &#128203;
+      </button>
+    </div>
+    <div class="clipboard-toast" id="clipboardToast"></div>
     <div class="export-grid">
       <button class="export-btn" data-format="json">
         <span class="icon">&#128196;</span> Raw JSON

@@ -88,6 +88,35 @@
       color: #fca5a5;
     }
 
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .search-bar input {
+      flex: 1;
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: #e8e8e8;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .search-bar input:focus { border-color: #3b82f6; }
+
+    .search-count {
+      font-size: 12px;
+      color: #888;
+      white-space: nowrap;
+    }
+
+    .session-card.hidden { display: none; }
+
     .stats-bar {
       display: flex;
       gap: 24px;
@@ -187,6 +216,27 @@
       white-space: nowrap;
     }
 
+    .session-note-input {
+      margin-top: 8px;
+      width: 100%;
+      background: #0f0f0f;
+      border: 1px solid #2d2d2d;
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: #ccc;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .session-note-input:focus {
+      border-color: #3b82f6;
+      background: #161616;
+    }
+
+    .session-note-input::placeholder { color: #555; }
+
     .session-actions {
       display: flex;
       align-items: center;
@@ -241,6 +291,189 @@
     .bundle-btn:hover { opacity: 0.92; }
     .bundle-btn:active { transform: scale(0.97); }
     .bundle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .clipboard-btn {
+      width: 32px; height: 32px;
+      background: transparent;
+      border: 1px solid #444;
+      color: #aaa;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      flex-shrink: 0;
+    }
+
+    .clipboard-btn:hover {
+      background: #2d2d2d;
+      border-color: #666;
+      color: #fff;
+    }
+
+    .clipboard-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .preview-btn {
+      width: 32px; height: 32px;
+      background: transparent;
+      border: 1px solid #2d2d2d;
+      color: #888;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      flex-shrink: 0;
+    }
+
+    .preview-btn:hover {
+      background: #1e2a3a;
+      border-color: #3b82f6;
+      color: #93c5fd;
+    }
+
+    /* --- Preview modal --- */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 24px;
+    }
+
+    .modal-backdrop.visible { display: flex; }
+
+    .modal {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 12px;
+      max-width: 800px;
+      width: 100%;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 18px 20px;
+      border-bottom: 1px solid #2d2d2d;
+    }
+
+    .modal-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .modal-subtitle {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    .modal-close {
+      background: transparent;
+      border: 1px solid #444;
+      color: #aaa;
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .modal-close:hover {
+      background: #2d2d2d;
+      color: #fff;
+    }
+
+    .modal-body {
+      padding: 8px 0;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .timeline-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 8px 20px;
+      border-bottom: 1px solid #222;
+      font-size: 12px;
+    }
+
+    .timeline-row:hover { background: #161616; }
+
+    .timeline-time {
+      color: #666;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+      min-width: 56px;
+      padding-top: 1px;
+    }
+
+    .timeline-icon {
+      width: 22px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .timeline-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .timeline-type {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 6px;
+    }
+
+    .timeline-type.click { background: #1e3a5f; color: #93c5fd; }
+    .timeline-type.input,
+    .timeline-type.paste { background: #3a2a1e; color: #fcd34d; }
+    .timeline-type.navigation { background: #1e3a2e; color: #86efac; }
+    .timeline-type.scroll,
+    .timeline-type.focus,
+    .timeline-type.blur,
+    .timeline-type.keydown { background: #2a2a2a; color: #aaa; }
+    .timeline-type.network { background: #3a1e3a; color: #d8b4fe; }
+
+    .timeline-desc {
+      color: #ccc;
+      word-break: break-word;
+    }
+
+    .timeline-detail {
+      color: #777;
+      font-size: 11px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      margin-top: 2px;
+      word-break: break-all;
+    }
+
+    .timeline-empty {
+      padding: 40px 20px;
+      text-align: center;
+      color: #666;
+      font-size: 13px;
+    }
 
     .delete-btn {
       width: 32px; height: 32px;
@@ -317,6 +550,11 @@
     </div>
     <div class="subtitle" style="margin-bottom: 20px;">All recorded sessions, newest first. Up to 20 sessions are retained.</div>
 
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Search by hostname or session name..." autocomplete="off" />
+      <span class="search-count" id="searchCount"></span>
+    </div>
+
     <div class="stats-bar" id="statsBar">
       <div class="stat">
         <div class="label">Sessions</div>
@@ -337,6 +575,19 @@
     </div>
 
     <div class="session-list" id="sessionList"></div>
+  </div>
+
+  <div class="modal-backdrop" id="previewModal">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="previewTitle">Session Preview</div>
+          <div class="modal-subtitle" id="previewSubtitle"></div>
+        </div>
+        <button class="modal-close" id="previewClose">&#10005;</button>
+      </div>
+      <div class="modal-body" id="previewBody"></div>
+    </div>
   </div>
 
   <script type="module" src="sessions.js"></script>

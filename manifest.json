@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AgentScribe",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Record browser workflows — DOM interactions, API calls, injectable fields — and export as JSON, Playwright, Postman, SOP, or MCP.",
   "permissions": [
     "tabs",
@@ -24,7 +24,7 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true
     }
   ],
   "action": {
@@ -36,6 +36,15 @@
     }
   },
   "options_page": "settings/settings.html",
+  "commands": {
+    "toggle-recording": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+R",
+        "mac": "Command+Shift+R"
+      },
+      "description": "Start or stop AgentScribe recording on the active tab"
+    }
+  },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

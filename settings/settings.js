@@ -6,6 +6,7 @@ const DEFAULT_SETTINGS = {
   logSensitiveValues: false,
   networkMethod: 'cdp',
   mcpExportEnabled: false,
+  autoBundleOnStop: false,
   correlationWindowMs: 1000,
   analyticsFilterDomains: [
     'google-analytics.com',
@@ -27,6 +28,7 @@ const fields = {
   logSensitiveValues: document.getElementById('logSensitiveValues'),
   networkMethod: document.getElementById('networkMethod'),
   mcpExportEnabled: document.getElementById('mcpExportEnabled'),
+  autoBundleOnStop: document.getElementById('autoBundleOnStop'),
   correlationWindowMs: document.getElementById('correlationWindowMs'),
   analyticsFilterDomains: document.getElementById('analyticsFilterDomains')
 };
@@ -50,6 +52,7 @@ async function loadSettings() {
   fields.logSensitiveValues.checked = settings.logSensitiveValues;
   fields.networkMethod.value = settings.networkMethod;
   fields.mcpExportEnabled.checked = settings.mcpExportEnabled;
+  fields.autoBundleOnStop.checked = settings.autoBundleOnStop;
   fields.correlationWindowMs.value = settings.correlationWindowMs;
   fields.analyticsFilterDomains.value = (settings.analyticsFilterDomains || []).join('\n');
 
@@ -67,6 +70,7 @@ function gatherSettings() {
     logSensitiveValues: fields.logSensitiveValues.checked,
     networkMethod: fields.networkMethod.value,
     mcpExportEnabled: fields.mcpExportEnabled.checked,
+    autoBundleOnStop: fields.autoBundleOnStop.checked,
     correlationWindowMs: parseInt(fields.correlationWindowMs.value, 10) || 1000,
     analyticsFilterDomains: fields.analyticsFilterDomains.value
       .split('\n')

@@ -2,6 +2,12 @@
   if (window.__agentscribe_content_loaded) return;
   window.__agentscribe_content_loaded = true;
 
+  // Top-frame check — only the top window paints the overlay UI.
+  // Iframes still capture events (per all_frames:true) but don't show overlays.
+  const isTopFrame = (() => {
+    try { return window.top === window; } catch { return false; }
+  })();
+
   let capturing = false;
   let eventCount = 0;
   let settings = null;
@@ -411,22 +417,24 @@
     document.addEventListener('mouseover', handleMouseOver, true);
     document.addEventListener('mouseout', handleMouseOut, true);
 
-    // Show inline overlay immediately for instant feedback.
-    // Poll for dedicated helpers; if they arrive within 600ms, swap.
-    createOverlay();
+    // Show inline overlay immediately — top frame only (iframes shouldn't paint UI).
     setTimeout(scanFields, 200);
 
-    waitForHelpers(600).then((found) => {
-      if (!capturing) return; // user already stopped recording
-      if (found && window.__agentscribe?.createOverlay) {
-        const inline = document.getElementById('agentscribe-overlay');
-        if (inline) inline.remove();
-        window.__agentscribe.createOverlay();
-        if (typeof window.__agentscribe.updateOverlayCount === 'function') {
-          window.__agentscribe.updateOverlayCount(eventCount);
+    if (isTopFrame) {
+      createOverlay();
+
+      waitForHelpers(600).then((found) => {
+        if (!capturing) return;
+        if (found && window.__agentscribe?.createOverlay) {
+          const inline = document.getElementById('agentscribe-overlay');
+          if (inline) inline.remove();
+          window.__agentscribe.createOverlay();
+          if (typeof window.__agentscribe.updateOverlayCount === 'function') {
+            window.__agentscribe.updateOverlayCount(eventCount);
+          }
         }
-      }
-    });
+      });
+    }
 
     mutationObserver = new MutationObserver((mutations) => {
       let hasNewNodes = false;
@@ -463,7 +471,7 @@
       mutationObserver = null;
     }
 
-    removeOverlay();
+    if (isTopFrame) removeOverlay();
   }
 
   // Poll for helper scripts. Aborts if recording stops mid-poll.
@@ -497,7 +505,7 @@
 
   function sendEvent(event) {
     eventCount++;
-    updateOverlayCount();
+    if (isTopFrame) updateOverlayCount();
     try {
       chrome.runtime.sendMessage({ type: 'DOM_EVENT', event });
     } catch (e) {}

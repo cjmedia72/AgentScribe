@@ -809,6 +809,19 @@ function capitalize(s) {
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
+// --- Keyboard shortcut (Ctrl+Shift+R / Cmd+Shift+R) toggles recording ---
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== 'toggle-recording') return;
+  await hydrateOnce();
+  if (isRecording) {
+    await stopRecording();
+  } else {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) await startRecording(tab.id);
+  }
+});
+
 // --- Init ---
 
 chrome.runtime.onInstalled.addListener(async () => {

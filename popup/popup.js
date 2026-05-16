@@ -112,6 +112,20 @@ btnStop.addEventListener('click', async () => {
     const duration = formatDuration(s.duration);
     exportSummary.textContent = `${duration} | ${s.domEventCount} DOM events | ${s.networkEventCount} API calls | ${s.fieldCount} fields`;
     showState('export');
+
+    // Auto-bundle on stop if enabled in settings
+    try {
+      const settings = await sendMessage({ type: 'GET_SETTINGS' });
+      if (settings?.autoBundleOnStop) {
+        const stored = await chrome.storage.local.get('lastSession');
+        if (stored.lastSession) {
+          const bundle = exportBundle(stored.lastSession);
+          triggerDownload(bundle.content, bundle.filename, bundle.mimeType);
+        }
+      }
+    } catch (e) {
+      console.error('[AgentScribe] Auto-bundle failed:', e);
+    }
   } else {
     showState('idle');
   }
@@ -164,6 +178,40 @@ document.querySelectorAll('.btn-bundle').forEach(btn => {
     }, 1000);
   });
 });
+
+// Clipboard copy button — paste bundle directly into agent
+const btnClipboard = document.getElementById('btnClipboard');
+const clipboardToast = document.getElementById('clipboardToast');
+if (btnClipboard) {
+  btnClipboard.addEventListener('click', async () => {
+    btnClipboard.style.opacity = '0.5';
+    btnClipboard.style.pointerEvents = 'none';
+    try {
+      const stored = await chrome.storage.local.get('lastSession');
+      const session = stored.lastSession;
+      if (!session) throw new Error('No session found');
+      const result = exportBundle(session);
+      await navigator.clipboard.writeText(result.content);
+      const sizeKb = (result.content.length / 1024).toFixed(1);
+      showClipboardToast(`Copied bundle to clipboard (${sizeKb} KB) — paste into your agent`, false);
+    } catch (e) {
+      console.error('[AgentScribe] Clipboard error:', e);
+      showClipboardToast(`Copy failed: ${e.message || e}`, true);
+    }
+    setTimeout(() => {
+      btnClipboard.style.opacity = '1';
+      btnClipboard.style.pointerEvents = 'auto';
+    }, 1000);
+  });
+}
+
+function showClipboardToast(msg, isError) {
+  if (!clipboardToast) return;
+  clipboardToast.textContent = msg;
+  clipboardToast.classList.toggle('error', !!isError);
+  clipboardToast.classList.add('visible');
+  setTimeout(() => clipboardToast.classList.remove('visible'), 3000);
+}
 
 document.querySelectorAll('.export-btn').forEach(btn => {
   btn.addEventListener('click', async () => {

@@ -1,3 +1,9 @@
+import { exportJSON } from '../exporters/json-exporter.js';
+import { exportPlaywright } from '../exporters/playwright-exporter.js';
+import { exportPostman } from '../exporters/postman-exporter.js';
+import { exportSOP } from '../exporters/sop-exporter.js';
+import { exportMCP } from '../exporters/mcp-exporter.js';
+
 const sessionList = document.getElementById('sessionList');
 const totalSessions = document.getElementById('totalSessions');
 const totalEvents = document.getElementById('totalEvents');
@@ -95,26 +101,42 @@ async function exportSession(sessionId, format, card) {
   buttons.forEach(b => b.disabled = true);
   toast.textContent = `Generating ${format.toUpperCase()}...`;
   toast.classList.add('visible');
+  toast.style.color = '';
 
-  const result = await sendMessage({ type: 'EXPORT', format, sessionId });
+  try {
+    // Fetch session from storage directly — no background SW round-trip
+    const stored = await chrome.storage.local.get('completedSessions');
+    const session = (stored.completedSessions || []).find(s => s.id === sessionId);
+    if (!session) throw new Error('Session not found in storage');
 
-  if (result?.error) {
-    toast.textContent = `Error: ${result.error}`;
-    toast.style.color = '#f87171';
-  } else if (result?.content && result?.filename) {
+    const result = runExporter(format, session);
+    if (!result || !result.content) throw new Error(`Unknown format: ${format}`);
+
     triggerDownload(result.content, result.filename, result.mimeType);
     toast.textContent = `Downloaded: ${result.filename}`;
     toast.style.color = '#86efac';
-  } else {
-    toast.textContent = 'Export failed — no content returned';
+  } catch (e) {
+    console.error('[AgentScribe] Export error:', e);
+    toast.textContent = `Error: ${e.message || e}`;
     toast.style.color = '#f87171';
+  } finally {
+    setTimeout(() => {
+      toast.classList.remove('visible');
+      toast.style.color = '';
+      buttons.forEach(b => b.disabled = false);
+    }, 2500);
   }
+}
 
-  setTimeout(() => {
-    toast.classList.remove('visible');
-    toast.style.color = '';
-    buttons.forEach(b => b.disabled = false);
-  }, 2500);
+function runExporter(format, session) {
+  switch (format) {
+    case 'json':       return exportJSON(session);
+    case 'playwright': return exportPlaywright(session);
+    case 'postman':    return exportPostman(session);
+    case 'sop':        return exportSOP(session);
+    case 'mcp':        return exportMCP(session);
+    default:           return null;
+  }
 }
 
 function triggerDownload(content, filename, mimeType) {

@@ -1,3 +1,9 @@
+import { exportJSON } from '../exporters/json-exporter.js';
+import { exportPlaywright } from '../exporters/playwright-exporter.js';
+import { exportPostman } from '../exporters/postman-exporter.js';
+import { exportSOP } from '../exporters/sop-exporter.js';
+import { exportMCP } from '../exporters/mcp-exporter.js';
+
 const stateIdle = document.getElementById('stateIdle');
 const stateRecording = document.getElementById('stateRecording');
 const stateExport = document.getElementById('stateExport');
@@ -142,11 +148,19 @@ document.querySelectorAll('.export-btn').forEach(btn => {
     btn.style.opacity = '0.5';
     btn.style.pointerEvents = 'none';
 
-    const result = await sendMessage({ type: 'EXPORT', format });
-    if (result && result.content && result.filename) {
+    try {
+      // Fetch last session from storage directly — no SW round-trip
+      const stored = await chrome.storage.local.get('lastSession');
+      const session = stored.lastSession;
+      if (!session) throw new Error('No session found');
+
+      const result = runExporter(format, session);
+      if (!result || !result.content) throw new Error(`Unknown format: ${format}`);
+
       triggerDownload(result.content, result.filename, result.mimeType);
-    } else if (result?.error) {
-      console.error('[AgentScribe] Export error:', result.error);
+    } catch (e) {
+      console.error('[AgentScribe] Export error:', e);
+      alert(`Export failed: ${e.message || e}`);
     }
 
     setTimeout(() => {
@@ -155,6 +169,17 @@ document.querySelectorAll('.export-btn').forEach(btn => {
     }, 1000);
   });
 });
+
+function runExporter(format, session) {
+  switch (format) {
+    case 'json':       return exportJSON(session);
+    case 'playwright': return exportPlaywright(session);
+    case 'postman':    return exportPostman(session);
+    case 'sop':        return exportSOP(session);
+    case 'mcp':        return exportMCP(session);
+    default:           return null;
+  }
+}
 
 function triggerDownload(content, filename, mimeType) {
   const blob = new Blob([content], { type: mimeType || 'application/octet-stream' });

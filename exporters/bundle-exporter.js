@@ -98,12 +98,28 @@ export function exportBundleLean(session) {
   };
 }
 
-// Shim text — ~1.5KB clipboard payload pointing the receiving agent to the
+// Shim text — ~2KB clipboard payload pointing the receiving agent to the
 // full bundle file on disk. Use when the agent has filesystem access
 // (Claude Code, Claude Desktop with Filesystem MCP, Cursor, etc.).
-export function buildShimText(session, absolutePath) {
+// `paths` is either a string (legacy single absolute path) or an object
+// { subpath, windows, posix } so the agent can resolve on any OS.
+export function buildShimText(session, paths) {
   const dur = Math.round(((session.endTime || Date.now()) - session.startTime) / 1000);
   const stats = `${session.events?.length || 0} DOM events · ${session.networkEvents?.length || 0} API calls · ${session.injectableFields?.length || 0} injectable fields`;
+
+  let pathBlock;
+  if (typeof paths === 'string') {
+    pathBlock = `## Full bundle file (on this machine):\n${paths}`;
+  } else {
+    pathBlock = `## Full bundle file (saved to your Downloads folder):
+
+Relative path: \`${paths.subpath}\`
+
+OS-specific absolute paths:
+- Windows: \`${paths.windows}\`
+- Mac / Linux: \`${paths.posix}\``;
+  }
+
   return `# AgentScribe Session Handoff
 
 Session: ${session.name}
@@ -112,8 +128,7 @@ Recorded: ${new Date(session.startTime).toLocaleString()}
 Duration: ${dur}s
 Stats: ${stats}
 
-## Full bundle file (on this machine):
-${absolutePath}
+${pathBlock}
 
 The full bundle — raw session events, every captured API call with payloads and response bodies, plus all 5 export formats (Raw JSON, Playwright, Postman, SOP, MCP) — is saved at the path above.
 

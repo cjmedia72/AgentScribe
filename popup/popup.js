@@ -204,45 +204,34 @@ if (btnClipboard) {
 }
 
 // Save full bundle to disk + copy shim (path + instructions) to clipboard.
-// Agent reads the file directly — no big paste, no crash.
+// CRITICAL ORDER: clipboard MUST happen first. If we trigger the download
+// first, the popup loses focus when the download shelf appears and
+// navigator.clipboard.writeText silently fails (requires document focus).
 async function saveBundleAndCopyShim(session) {
   const full = exportBundle(session);
+  const subpath = `AgentScribe/sessions/${full.filename}`;
+  const paths = {
+    subpath,
+    windows: `%USERPROFILE%\\Downloads\\${subpath.replace(/\//g, '\\')}`,
+    posix: `~/Downloads/${subpath}`
+  };
+
+  // STEP 1: Clipboard FIRST (while focus and user activation are still fresh)
+  const shim = buildShimText(session, paths);
+  await navigator.clipboard.writeText(shim);
+
+  // STEP 2: Save the actual file (download starts; don't block on completion)
   const blob = new Blob([full.content], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  const subpath = `AgentScribe/sessions/${full.filename}`;
-
-  const downloadId = await new Promise((resolve, reject) => {
+  await new Promise((resolve, reject) => {
     chrome.downloads.download({ url, filename: subpath, saveAs: false }, (id) => {
       if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
       else resolve(id);
     });
   });
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 
-  // Wait for completion so we get the resolved absolute filename
-  const info = await waitForDownload(downloadId);
-  URL.revokeObjectURL(url);
-  const absolutePath = info?.filename || `<Downloads>/${subpath}`;
-
-  const shim = buildShimText(session, absolutePath);
-  await navigator.clipboard.writeText(shim);
-
-  return { absolutePath, shimKb: (shim.length / 1024).toFixed(1) };
-}
-
-function waitForDownload(downloadId, maxMs = 8000) {
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const tick = () => {
-      chrome.downloads.search({ id: downloadId }, (results) => {
-        const item = results?.[0];
-        if (item?.state === 'complete') return resolve(item);
-        if (item?.state === 'interrupted') return reject(new Error('Download interrupted'));
-        if (Date.now() - start > maxMs) return reject(new Error('Download timed out'));
-        setTimeout(tick, 100);
-      });
-    };
-    tick();
-  });
+  return { shimKb: (shim.length / 1024).toFixed(1), subpath };
 }
 
 function showClipboardToast(msg, isError) {

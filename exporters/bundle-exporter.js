@@ -159,6 +159,41 @@ If you don't have filesystem access:
 `;
 }
 
+// Wrap the lean bundle JSON in agent-friendly instructions for clipboard paste.
+// Self-contained — no file dependency. Total payload ~22KB for typical sessions.
+export function wrapLeanForClipboard(session, leanJsonString) {
+  const dur = Math.round(((session.endTime || Date.now()) - session.startTime) / 1000);
+  const dom = session.events?.length || 0;
+  const net = session.networkEvents?.length || 0;
+  const fields = session.injectableFields?.length || 0;
+  return `# AgentScribe Session Handoff
+
+Session: ${session.name}
+URL: ${session.startUrl}
+Recorded: ${new Date(session.startTime).toLocaleString()}
+Duration: ${dur}s
+Stats: ${dom} DOM events · ${net} API calls · ${fields} injectable fields
+
+## Agent instructions:
+
+This is a self-contained recording of a browser workflow. The JSON below contains everything you need to automate this workflow at scale.
+
+**Start here:** \`mcp.api_map\` lists the actual API endpoints the user's clicks fired (method + URL + payload schema + response status). To bypass the UI entirely, generate a script that hits those endpoints directly.
+
+**To parameterize:** \`injectable_fields\` maps form fields to POST param names. Loop your script over a list of target inputs, varying these fields.
+
+**For the action sequence (if browser-based replay is required):** \`mcp.steps\` is the chronological list of user actions with selectors.
+
+**Note:** This is a LEAN export — raw event log, response bodies, and Playwright/Postman/SOP formats are not included to keep clipboard size manageable. If you need any of those, ask the user to click the BUNDLE button in the AgentScribe extension to download the full bundle.
+
+## Session data:
+
+\`\`\`json
+${leanJsonString}
+\`\`\`
+`;
+}
+
 function buildMeta(session, variant) {
   return {
     schema: variant === 'lean' ? 'agentscribe-bundle-lean' : 'agentscribe-bundle',

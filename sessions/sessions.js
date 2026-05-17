@@ -3,7 +3,7 @@ import { exportPlaywright } from '../exporters/playwright-exporter.js';
 import { exportPostman } from '../exporters/postman-exporter.js';
 import { exportSOP } from '../exporters/sop-exporter.js';
 import { exportMCP } from '../exporters/mcp-exporter.js';
-import { exportBundle, exportBundleLean, buildShimText } from '../exporters/bundle-exporter.js';
+import { exportBundle, exportBundleLean, wrapLeanForClipboard } from '../exporters/bundle-exporter.js';
 
 const sessionList = document.getElementById('sessionList');
 const searchInput = document.getElementById('searchInput');
@@ -192,29 +192,15 @@ async function copyBundleToClipboard(session, card) {
   toast.style.color = '';
 
   try {
-    // Build shim synchronously
-    const full = exportBundle(session);
-    const subpath = `AgentScribe/sessions/${full.filename}`;
-    const paths = {
-      subpath,
-      windows: `%USERPROFILE%\\Downloads\\${subpath.replace(/\//g, '\\')}`,
-      posix: `~/Downloads/${subpath}`
-    };
-    const shim = buildShimText(session, paths);
+    // Build lean wrapped payload synchronously — self-contained, no file save needed
+    const lean = exportBundleLean(session);
+    const payload = wrapLeanForClipboard(session, lean.content);
 
     // FIRST await is the clipboard write — activation still valid
-    await navigator.clipboard.writeText(shim);
+    await navigator.clipboard.writeText(payload);
 
-    toast.textContent = `Shim copied (${(shim.length/1024).toFixed(1)} KB). Saving file...`;
+    toast.textContent = `Copied ${(payload.length/1024).toFixed(1)} KB to clipboard. Paste into your agent.`;
     toast.style.color = '#86efac';
-
-    // Now save file (no longer competing for activation)
-    const blob = new Blob([full.content], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    chrome.downloads.download({ url, filename: subpath, saveAs: false }, () => {
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      toast.textContent = `Shim copied + file saved. Paste into your agent.`;
-    });
   } catch (e) {
     console.error('[AgentScribe] Clipboard error:', e);
     toast.textContent = `Failed: ${e.message || e}`;

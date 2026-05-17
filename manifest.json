@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AgentScribe",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Record browser workflows — DOM interactions, API calls, injectable fields — and export as JSON, Playwright, Postman, SOP, or MCP.",
   "permissions": [
     "tabs",
@@ -12,7 +12,8 @@
     "webRequest",
     "webNavigation",
     "downloads",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "clipboardWrite"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

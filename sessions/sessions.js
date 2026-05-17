@@ -102,7 +102,9 @@ function buildCard(session) {
   });
 
   card.querySelector('.clipboard-btn')?.addEventListener('click', () => {
-    copyBundleToClipboard(session.id, card);
+    // Pass the in-closure session directly — no storage.get await, which
+    // would consume the click's user activation before clipboard.writeText.
+    copyBundleToClipboard(session, card);
   });
 
   card.querySelector('.preview-btn')?.addEventListener('click', () => {
@@ -173,25 +175,49 @@ async function exportSession(sessionId, format, card) {
   }
 }
 
-async function copyBundleToClipboard(sessionId, card) {
+async function copyBundleToClipboard(session, card) {
+  // Session is passed in directly — NOT fetched from storage. This means the
+  // very first await in this function is clipboard.writeText, so Chrome's
+  // transient user activation is still valid when it runs.
+  if (!session) {
+    showCardToast(card, 'Session data unavailable', true);
+    return;
+  }
+
   const toast = card.querySelector('.toast');
   const buttons = card.querySelectorAll('.export-btn, .bundle-btn, .clipboard-btn, .delete-btn, .preview-btn');
   buttons.forEach(b => b.disabled = true);
-  toast.textContent = 'Saving bundle + building shim...';
+  toast.textContent = 'Building shim...';
   toast.classList.add('visible');
   toast.style.color = '';
 
   try {
-    const stored = await chrome.storage.local.get('completedSessions');
-    const session = (stored.completedSessions || []).find(s => s.id === sessionId);
-    if (!session) throw new Error('Session not found in storage');
+    // Build shim synchronously
+    const full = exportBundle(session);
+    const subpath = `AgentScribe/sessions/${full.filename}`;
+    const paths = {
+      subpath,
+      windows: `%USERPROFILE%\\Downloads\\${subpath.replace(/\//g, '\\')}`,
+      posix: `~/Downloads/${subpath}`
+    };
+    const shim = buildShimText(session, paths);
 
-    const result = await saveBundleAndCopyShim(session);
-    toast.textContent = `Saved bundle + copied shim (${result.shimKb} KB). Paste into your agent — it'll read the file.`;
+    // FIRST await is the clipboard write — activation still valid
+    await navigator.clipboard.writeText(shim);
+
+    toast.textContent = `Shim copied (${(shim.length/1024).toFixed(1)} KB). Saving file...`;
     toast.style.color = '#86efac';
+
+    // Now save file (no longer competing for activation)
+    const blob = new Blob([full.content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    chrome.downloads.download({ url, filename: subpath, saveAs: false }, () => {
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast.textContent = `Shim copied + file saved. Paste into your agent.`;
+    });
   } catch (e) {
-    console.error('[AgentScribe] Shim error:', e);
-    toast.textContent = `Shim failed: ${e.message || e}`;
+    console.error('[AgentScribe] Clipboard error:', e);
+    toast.textContent = `Failed: ${e.message || e}`;
     toast.style.color = '#f87171';
   } finally {
     setTimeout(() => {
@@ -202,35 +228,16 @@ async function copyBundleToClipboard(sessionId, card) {
   }
 }
 
-// Save full bundle to disk + copy shim with path to clipboard.
-// CRITICAL ORDER: clipboard MUST happen first. Triggering the download
-// before clipboard.writeText causes the document to lose focus and the
-// clipboard write silently fails.
-async function saveBundleAndCopyShim(session) {
-  const full = exportBundle(session);
-  const subpath = `AgentScribe/sessions/${full.filename}`;
-  const paths = {
-    subpath,
-    windows: `%USERPROFILE%\\Downloads\\${subpath.replace(/\//g, '\\')}`,
-    posix: `~/Downloads/${subpath}`
-  };
-
-  // STEP 1: Clipboard FIRST (while focus is still fresh)
-  const shim = buildShimText(session, paths);
-  await navigator.clipboard.writeText(shim);
-
-  // STEP 2: Save the actual file
-  const blob = new Blob([full.content], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  await new Promise((resolve, reject) => {
-    chrome.downloads.download({ url, filename: subpath, saveAs: false }, (id) => {
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(id);
-    });
-  });
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-
-  return { shimKb: (shim.length / 1024).toFixed(1), subpath };
+function showCardToast(card, msg, isError) {
+  const toast = card.querySelector('.toast');
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.style.color = isError ? '#f87171' : '#86efac';
+  toast.classList.add('visible');
+  setTimeout(() => {
+    toast.classList.remove('visible');
+    toast.style.color = '';
+  }, 3000);
 }
 
 function runExporter(format, session) {

@@ -33,6 +33,10 @@ const droppedCount = document.getElementById('droppedCount');
 let pollInterval = null;
 let timerInterval = null;
 let recordingStartTime = 0;
+// Cached last session — populated at init + after stop. Used by clipboard
+// handler so we don't have to await chrome.storage.local.get (which would
+// consume the click's transient user activation before clipboard.writeText).
+let cachedLastSession = null;
 
 function showState(state) {
   stateIdle.style.display = state === 'idle' ? 'block' : 'none';
@@ -60,10 +64,20 @@ async function init() {
   } else {
     const lastSession = await sendMessage({ type: 'GET_LAST_SESSION' });
     if (lastSession) {
+      cachedLastSession = lastSession;
       showLastSession(lastSession);
     }
     showState('idle');
   }
+}
+
+// Pre-cache lastSession in the background so it's available the moment the
+// user clicks clipboard (no storage.get await before the clipboard write).
+async function refreshCachedSession() {
+  try {
+    const stored = await chrome.storage.local.get('lastSession');
+    if (stored.lastSession) cachedLastSession = stored.lastSession;
+  } catch {}
 }
 
 function showLastSession(session) {
@@ -113,15 +127,15 @@ btnStop.addEventListener('click', async () => {
     exportSummary.textContent = `${duration} | ${s.domEventCount} DOM events | ${s.networkEventCount} API calls | ${s.fieldCount} fields`;
     showState('export');
 
+    // Pre-cache the session so clipboard works without an await
+    await refreshCachedSession();
+
     // Auto-bundle on stop if enabled in settings
     try {
       const settings = await sendMessage({ type: 'GET_SETTINGS' });
-      if (settings?.autoBundleOnStop) {
-        const stored = await chrome.storage.local.get('lastSession');
-        if (stored.lastSession) {
-          const bundle = exportBundle(stored.lastSession);
-          triggerDownload(bundle.content, bundle.filename, bundle.mimeType);
-        }
+      if (settings?.autoBundleOnStop && cachedLastSession) {
+        const bundle = exportBundle(cachedLastSession);
+        triggerDownload(bundle.content, bundle.filename, bundle.mimeType);
       }
     } catch (e) {
       console.error('[AgentScribe] Auto-bundle failed:', e);
@@ -140,6 +154,7 @@ btnNewRecording.addEventListener('click', () => {
 btnExportLast.addEventListener('click', async () => {
   const lastSession = await sendMessage({ type: 'GET_LAST_SESSION' });
   if (lastSession) {
+    cachedLastSession = lastSession;
     const duration = formatDuration(lastSession.endTime - lastSession.startTime);
     const evts = lastSession.events?.length || 0;
     const nets = lastSession.networkEvents?.length || 0;
@@ -186,16 +201,45 @@ if (btnClipboard) {
   btnClipboard.addEventListener('click', async () => {
     btnClipboard.style.opacity = '0.5';
     btnClipboard.style.pointerEvents = 'none';
-    try {
-      const stored = await chrome.storage.local.get('lastSession');
-      const session = stored.lastSession;
-      if (!session) throw new Error('No session found');
-      const result = await saveBundleAndCopyShim(session);
-      showClipboardToast(`Saved bundle + copied shim (${result.shimKb} KB clipboard). Paste into your agent.`, false);
-    } catch (e) {
-      console.error('[AgentScribe] Shim error:', e);
-      showClipboardToast(`Shim failed: ${e.message || e}`, true);
+
+    // Use CACHED session — no storage.get await before clipboard.writeText.
+    // Chrome consumes the click's transient user activation on the first await,
+    // so the clipboard write MUST be the first async operation.
+    const session = cachedLastSession;
+    if (!session) {
+      showClipboardToast('No session loaded — record one first or click EXPORT LAST.', true);
+      btnClipboard.style.opacity = '1';
+      btnClipboard.style.pointerEvents = 'auto';
+      return;
     }
+
+    try {
+      // Build shim synchronously
+      const full = exportBundle(session);
+      const subpath = `AgentScribe/sessions/${full.filename}`;
+      const paths = {
+        subpath,
+        windows: `%USERPROFILE%\\Downloads\\${subpath.replace(/\//g, '\\')}`,
+        posix: `~/Downloads/${subpath}`
+      };
+      const shim = buildShimText(session, paths);
+
+      // FIRST await is the clipboard write — activation still valid
+      await navigator.clipboard.writeText(shim);
+
+      showClipboardToast(`Shim copied to clipboard (${(shim.length/1024).toFixed(1)} KB). Saving file in background...`, false);
+
+      // Save file AFTER clipboard is written (no longer racing for activation)
+      const blob = new Blob([full.content], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      chrome.downloads.download({ url, filename: subpath, saveAs: false }, () => {
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      });
+    } catch (e) {
+      console.error('[AgentScribe] Clipboard error:', e);
+      showClipboardToast(`Clipboard failed: ${e.message || e}`, true);
+    }
+
     setTimeout(() => {
       btnClipboard.style.opacity = '1';
       btnClipboard.style.pointerEvents = 'auto';
@@ -203,36 +247,6 @@ if (btnClipboard) {
   });
 }
 
-// Save full bundle to disk + copy shim (path + instructions) to clipboard.
-// CRITICAL ORDER: clipboard MUST happen first. If we trigger the download
-// first, the popup loses focus when the download shelf appears and
-// navigator.clipboard.writeText silently fails (requires document focus).
-async function saveBundleAndCopyShim(session) {
-  const full = exportBundle(session);
-  const subpath = `AgentScribe/sessions/${full.filename}`;
-  const paths = {
-    subpath,
-    windows: `%USERPROFILE%\\Downloads\\${subpath.replace(/\//g, '\\')}`,
-    posix: `~/Downloads/${subpath}`
-  };
-
-  // STEP 1: Clipboard FIRST (while focus and user activation are still fresh)
-  const shim = buildShimText(session, paths);
-  await navigator.clipboard.writeText(shim);
-
-  // STEP 2: Save the actual file (download starts; don't block on completion)
-  const blob = new Blob([full.content], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  await new Promise((resolve, reject) => {
-    chrome.downloads.download({ url, filename: subpath, saveAs: false }, (id) => {
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(id);
-    });
-  });
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-
-  return { shimKb: (shim.length / 1024).toFixed(1), subpath };
-}
 
 function showClipboardToast(msg, isError) {
   if (!clipboardToast) return;

@@ -863,24 +863,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'STOP_RECORDING_FROM_OVERLAY') {
+    // CRITICAL ORDER: open the popup BEFORE any await. The user-gesture
+    // context propagated from the overlay click is fragile — if we await
+    // stopRecording first (CDP detach + storage write can take 10-60s on
+    // heavy pages), Chrome will reject openPopup() and the user sees
+    // nothing until the fallback fires way late.
+    let popupOpened = false;
+    try {
+      if (chrome.action && typeof chrome.action.openPopup === 'function') {
+        chrome.action.openPopup()
+          .then(() => { popupOpened = true; })
+          .catch(() => { /* fall through to sessions-page fallback below */ });
+      }
+    } catch (e) { /* swallow — fallback handles */ }
+
+    // Race the fallback: if openPopup hasn't succeeded within 300ms,
+    // open the sessions page so the user isn't left staring at nothing
+    // for the full stop-recording duration.
+    setTimeout(() => {
+      if (popupOpened) return;
+      chrome.tabs.create({ url: chrome.runtime.getURL('sessions/sessions.html') })
+        .catch(e => console.warn('[AgentScribe] sessions fallback failed:', e?.message || e));
+    }, 300);
+
+    // Now run the actual stop in the background — popup/sessions already open.
     (async () => {
       const result = await stopRecording();
-      // Surface the popup so user can immediately export. chrome.action.openPopup
-      // is MV3 and may reject if no active window / no user gesture context.
-      // Fallback: open the sessions page in a new tab.
-      try {
-        if (chrome.action && typeof chrome.action.openPopup === 'function') {
-          await chrome.action.openPopup();
-        } else {
-          throw new Error('openPopup unavailable');
-        }
-      } catch (e) {
-        try {
-          await chrome.tabs.create({ url: chrome.runtime.getURL('sessions/sessions.html') });
-        } catch (e2) {
-          console.warn('[AgentScribe] popup + sessions fallback both failed:', e2?.message || e2);
-        }
-      }
       sendResponse(result);
     })();
     return true;

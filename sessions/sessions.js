@@ -23,6 +23,7 @@ async function init() {
 
   await renderSessions();
   await updateStorageUsage();
+  await refreshDebugPanel();
 
   // v1.0.13 audit fix: storage.onChanged listener closes the stop-popup race.
   //
@@ -475,6 +476,202 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// --- Storage Debug Panel (v1.0.13 hotfix) ---
+// Surfaces per-key chrome.storage.local usage so we can diagnose mismatches
+// between "0 sessions" UI state and large reported storage usage. The 106 MB
+// /0 sessions bug was an orphaned activeSession that never finalized.
+
+const KNOWN_STORAGE_KEYS = [
+  'completedSessions',
+  'lastSession',
+  'activeSession',
+  'settings',
+  'isRecording',
+  'trackedTabIds',
+  'activeTabId'
+];
+
+const debugPanel = document.getElementById('debugPanel');
+const debugToggle = document.getElementById('debugToggle');
+const debugKeyTable = document.getElementById('debugKeyTable');
+const debugActiveSection = document.getElementById('debugActiveSection');
+const debugActiveDetail = document.getElementById('debugActiveDetail');
+const debugRefreshBtn = document.getElementById('debugRefreshBtn');
+const debugListKeysBtn = document.getElementById('debugListKeysBtn');
+const debugRecoverBtn = document.getElementById('debugRecoverBtn');
+const debugClearActiveBtn = document.getElementById('debugClearActiveBtn');
+const debugMsg = document.getElementById('debugMsg');
+const debugKeysList = document.getElementById('debugKeysList');
+
+debugToggle?.addEventListener('click', () => {
+  debugPanel.classList.toggle('expanded');
+});
+
+debugRefreshBtn?.addEventListener('click', () => refreshDebugPanel());
+debugListKeysBtn?.addEventListener('click', () => listAllStorageKeys());
+debugRecoverBtn?.addEventListener('click', () => recoverActiveSession());
+debugClearActiveBtn?.addEventListener('click', () => clearActiveSession());
+
+function fmtBytes(n) {
+  if (n == null || isNaN(n)) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(2)} MB`;
+}
+
+function getBytesInUse(key) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.getBytesInUse(key, (bytes) => {
+        if (chrome.runtime.lastError) { resolve(null); return; }
+        resolve(bytes);
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+function showDebugMsg(msg, isError) {
+  if (!debugMsg) return;
+  debugMsg.textContent = msg;
+  debugMsg.classList.toggle('error', !!isError);
+  debugMsg.classList.add('visible');
+  setTimeout(() => debugMsg.classList.remove('visible'), 5000);
+}
+
+async function refreshDebugPanel() {
+  try {
+    const total = await getBytesInUse(null);
+    const perKey = await Promise.all(
+      KNOWN_STORAGE_KEYS.map(async (k) => ({ key: k, bytes: await getBytesInUse(k) }))
+    );
+
+    const accounted = perKey.reduce((s, r) => s + (r.bytes || 0), 0);
+    const other = (total || 0) - accounted;
+
+    const rows = [];
+    rows.push(rowHtml('TOTAL', fmtBytes(total), total > 50 * 1048576 ? 'large' : ''));
+    perKey.forEach(({ key, bytes }) => {
+      const cls = bytes === 0 ? 'zero' : (bytes > 50 * 1048576 ? 'large' : '');
+      rows.push(rowHtml(key, fmtBytes(bytes), cls));
+    });
+    if (other > 1024) {
+      rows.push(rowHtml('(unaccounted)', fmtBytes(other), other > 50 * 1048576 ? 'large' : ''));
+    }
+    debugKeyTable.innerHTML = rows.join('');
+
+    // Check activeSession content — show recovery UI if it has real data.
+    let active = null;
+    try {
+      const stored = await chrome.storage.local.get('activeSession');
+      active = stored.activeSession;
+    } catch {}
+
+    if (active) {
+      const evCount = active.events?.length || 0;
+      const netCount = active.networkEvents?.length || 0;
+      const hasData = evCount > 0 || netCount > 0;
+      debugActiveSection.style.display = 'block';
+      debugActiveDetail.innerHTML = [
+        rowHtml('name', escapeHtmlSafe(active.name || '(unnamed)')),
+        rowHtml('startUrl', escapeHtmlSafe(active.startUrl || '(none)')),
+        rowHtml('events.length', String(evCount)),
+        rowHtml('networkEvents.length', String(netCount)),
+        rowHtml('startTime', active.startTime ? new Date(active.startTime).toLocaleString() : '—'),
+        rowHtml('endTime', active.endTime ? new Date(active.endTime).toLocaleString() : '(not set)')
+      ].join('');
+      debugRecoverBtn.style.display = hasData ? 'inline-block' : 'none';
+      debugClearActiveBtn.style.display = 'inline-block';
+      // Auto-expand panel if there's an orphaned session with data.
+      if (hasData && !debugPanel.classList.contains('expanded')) {
+        debugPanel.classList.add('expanded');
+      }
+    } else {
+      debugActiveSection.style.display = 'none';
+      debugRecoverBtn.style.display = 'none';
+      debugClearActiveBtn.style.display = 'none';
+    }
+  } catch (e) {
+    console.error('[AgentScribe] debug panel refresh failed:', e);
+    showDebugMsg(`Refresh failed: ${e.message || e}`, true);
+  }
+}
+
+function rowHtml(k, v, vClass) {
+  return `<div class="debug-row"><span class="k">${escapeHtmlSafe(k)}</span><span class="v ${vClass || ''}">${escapeHtmlSafe(v)}</span></div>`;
+}
+
+function escapeHtmlSafe(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function listAllStorageKeys() {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const entries = await Promise.all(
+      Object.keys(all).map(async (k) => ({ key: k, bytes: await getBytesInUse(k) }))
+    );
+    entries.sort((a, b) => (b.bytes || 0) - (a.bytes || 0));
+    const rows = entries.map(({ key, bytes }) => {
+      const cls = bytes > 50 * 1048576 ? 'large' : (bytes === 0 ? 'zero' : '');
+      return rowHtml(key, fmtBytes(bytes), cls);
+    });
+    debugKeysList.innerHTML = rows.join('') || '<div style="color:#666">(no keys)</div>';
+    debugKeysList.style.display = 'block';
+  } catch (e) {
+    console.error('[AgentScribe] listAllStorageKeys failed:', e);
+    showDebugMsg(`Failed: ${e.message || e}`, true);
+  }
+}
+
+async function recoverActiveSession() {
+  if (!confirm('Recover the orphaned activeSession into Completed Sessions?')) return;
+  debugRecoverBtn.disabled = true;
+  try {
+    const result = await sendMessage({ type: 'RECOVER_ACTIVE_SESSION' });
+    if (result?.success) {
+      const s = result.session || {};
+      const trunc = s.recoveredTruncatedCount ? ` (${s.recoveredTruncatedCount} oversized bodies truncated)` : '';
+      showDebugMsg(`Recovered: "${s.name}" — ${s.domEventCount || 0} events / ${s.networkEventCount || 0} API calls${trunc}`, false);
+      await renderSessions();
+      await updateStorageUsage();
+      await refreshDebugPanel();
+    } else {
+      showDebugMsg(`Recovery failed: ${result?.reason || result?.error || 'unknown'}`, true);
+    }
+  } catch (e) {
+    showDebugMsg(`Recovery error: ${e.message || e}`, true);
+  } finally {
+    debugRecoverBtn.disabled = false;
+  }
+}
+
+async function clearActiveSession() {
+  if (!confirm('Discard the orphaned activeSession? This deletes its captured events permanently.')) return;
+  debugClearActiveBtn.disabled = true;
+  try {
+    await chrome.storage.local.set({
+      activeSession: null,
+      isRecording: false,
+      activeTabId: null,
+      trackedTabIds: []
+    });
+    showDebugMsg('activeSession cleared. Storage should free up shortly.', false);
+    await updateStorageUsage();
+    await refreshDebugPanel();
+  } catch (e) {
+    showDebugMsg(`Clear failed: ${e.message || e}`, true);
+  } finally {
+    debugClearActiveBtn.disabled = false;
+  }
 }
 
 init();

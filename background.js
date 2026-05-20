@@ -23,6 +23,41 @@ const CAPTURE_TYPES = ['XHR', 'Fetch', 'Document', 'Other'];
 const SKIP_DOMAINS = ['google-analytics.com', 'doubleclick.net', 'facebook.com/tr', 'amazon-adsystem.com'];
 const PENDING_TTL_MS = 60000;
 
+// v1.0.13 hotfix: hard cap on a single network event's responseBody.
+//
+// POSTMORTEM (sessions-page reports 0 sessions but 106 MB used):
+//   The user hit a state where `chrome.storage.local` ballooned to 106 MB
+//   while `completedSessions[]` was empty. Root cause is almost certainly an
+//   `activeSession` blob that never made it through finalize — chrome.storage
+//   silently failed (or the SW was evicted) on a single .set() of a ~100 MB
+//   object. Two compounding factors:
+//     1) No per-event responseBody cap. A single large download (file export,
+//        big JSON, base64 PDF) gets fully captured via Network.getResponseBody
+//        and lives forever in sessionBuffer.networkEvents[].
+//     2) maybePersistSession() writes the WHOLE sessionBuffer on every
+//        threshold-trip. A 100 MB write to chrome.storage.local can take
+//        10-60s and is the prime candidate for the SW-killed-mid-stop race.
+//     3) _stopRecordingImpl() doesn't tolerate a partial-write failure —
+//        if the final set() throws, activeSession is never cleared, and the
+//        session is orphaned in storage.
+//
+// FIX: cap responseBody at 1 MB per event. Anything bigger is truncated and
+// flagged `responseBodyTruncated: true`. Applied at capture-time in
+// finalizeNetworkEvent (prevents the buffer from ever getting huge) AND
+// defensively at finalize-time in _stopRecordingImpl (catches anything that
+// slipped through earlier capture paths, e.g. webRequest fallback).
+const MAX_RESPONSE_BODY_BYTES = 1024 * 1024; // 1 MB
+
+function truncateResponseBody(event) {
+  if (!event || typeof event.responseBody !== 'string') return event;
+  if (event.responseBody.length <= MAX_RESPONSE_BODY_BYTES) return event;
+  event.responseBody = event.responseBody.slice(0, MAX_RESPONSE_BODY_BYTES);
+  event.responseBodyTruncated = true;
+  // If we truncated, the parsed JSON is no longer valid — drop it.
+  event.responseBodyParsed = null;
+  return event;
+}
+
 // --- Hydration: restore state from chrome.storage.local on SW wake ---
 
 // Settled-flag hydration. Storage read mutates state only if it wins the race
@@ -231,6 +266,9 @@ function finalizeNetworkEvent(netEvent) {
     ...netEvent,
     correlatedToDomEventId: null
   };
+
+  // v1.0.13 hotfix: cap responseBody at capture time. See MAX_RESPONSE_BODY_BYTES comment.
+  truncateResponseBody(event);
 
   // v1.0.13 Wave 3: enrich with auth-detector classification. Wrapped so a
   // classifier exception cannot break the capture pipeline.
@@ -690,6 +728,18 @@ async function _stopRecordingImpl() {
   sessionBuffer.endTime = Date.now();
   sessionBuffer.eventCount = sessionBuffer.events.length;
 
+  // v1.0.13 hotfix: defensive pass — re-cap any responseBody that slipped past
+  // capture-time truncation (e.g. webRequest fallback, hydrated old session).
+  let _truncatedAtFinalize = 0;
+  for (const ev of sessionBuffer.networkEvents) {
+    const wasTruncated = ev.responseBodyTruncated === true;
+    truncateResponseBody(ev);
+    if (!wasTruncated && ev.responseBodyTruncated === true) _truncatedAtFinalize++;
+  }
+  if (_truncatedAtFinalize > 0) {
+    console.warn(`[AgentScribe] Truncated ${_truncatedAtFinalize} oversized responseBody payloads at finalize.`);
+  }
+
   // Smart name inferred from captured events — runs AFTER correlation so
   // triggeredRequests are populated and search terms / button clicks are present.
   try {
@@ -719,14 +769,29 @@ async function _stopRecordingImpl() {
   completed.unshift(sessionBuffer);
   if (completed.length > 20) completed.length = 20;
 
-  await chrome.storage.local.set({
-    completedSessions: completed,
-    lastSession: sessionBuffer,
-    activeSession: null,
-    isRecording: false,
-    activeTabId: null,
-    trackedTabIds: []
-  });
+  // v1.0.13 hotfix: wrap the finalize write. If this throws (quota exceeded
+  // on a huge session, SW eviction mid-write, etc.), surface the error
+  // instead of silently dropping the session into the activeSession orphan
+  // state that produced the 106 MB / 0 sessions bug.
+  try {
+    await chrome.storage.local.set({
+      completedSessions: completed,
+      lastSession: sessionBuffer,
+      activeSession: null,
+      isRecording: false,
+      activeTabId: null,
+      trackedTabIds: []
+    });
+  } catch (e) {
+    console.error('[AgentScribe] FINALIZE WRITE FAILED:', e?.message || e);
+    // Try a fallback: clear activeSession alone so the session at least
+    // becomes recoverable from the (already-written) completedSessions if
+    // that write happened to succeed before the throw.
+    try {
+      await chrome.storage.local.set({ isRecording: false, activeTabId: null, trackedTabIds: [] });
+    } catch {}
+    return { success: false, error: e?.message || String(e), reason: 'finalize_write_failed' };
+  }
 
   const sessionResult = {
     id: sessionBuffer.id,
@@ -996,6 +1061,124 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.storage.local.remove(['completedSessions', 'lastSession']).then(() => {
       sendResponse({ success: true });
     });
+    return true;
+  }
+
+  // v1.0.13 hotfix: orphan-activeSession recovery. See _stopRecordingImpl
+  // postmortem comment for why an activeSession can outlive a stop. This
+  // handler is wired to the "Recover" button on the sessions debug panel.
+  if (msg.type === 'RECOVER_ACTIVE_SESSION') {
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get(['activeSession', 'completedSessions']);
+        const active = stored.activeSession;
+        if (!active) {
+          sendResponse({ success: false, reason: 'no_active_session' });
+          return;
+        }
+
+        const evCount = (active.events?.length || 0);
+        const netCount = (active.networkEvents?.length || 0);
+        if (evCount === 0 && netCount === 0) {
+          // Nothing worth recovering — just nuke it so storage frees up.
+          await chrome.storage.local.set({
+            activeSession: null,
+            isRecording: false,
+            activeTabId: null,
+            trackedTabIds: []
+          });
+          sendResponse({ success: false, reason: 'empty_session', cleared: true });
+          return;
+        }
+
+        // Defensive: re-cap any oversized responseBody on the recovered events.
+        let recoveredTruncated = 0;
+        for (const ev of (active.networkEvents || [])) {
+          const wasTruncated = ev.responseBodyTruncated === true;
+          truncateResponseBody(ev);
+          if (!wasTruncated && ev.responseBodyTruncated === true) recoveredTruncated++;
+        }
+
+        // Re-run correlation on the buffered events so triggeredRequests
+        // populate and inferSessionName has something to chew on.
+        try {
+          const result = correlate(active.events || [], active.networkEvents || [], correlationWindowMs);
+          active.events = result.domEvents;
+          active.networkEvents = result.networkEvents;
+        } catch (e) {
+          console.warn('[AgentScribe] RECOVER: correlate() failed, keeping raw events:', e?.message || e);
+        }
+
+        if (!active.endTime) active.endTime = Date.now();
+        active.eventCount = active.events?.length || 0;
+        active.recovered = true;
+        active.recoveredAt = Date.now();
+        if (recoveredTruncated > 0) active.recoveredTruncatedCount = recoveredTruncated;
+
+        try {
+          active.name = inferSessionName(active);
+        } catch (e) {
+          console.warn('[AgentScribe] RECOVER: inferSessionName failed:', e?.message || e);
+          if (!active.name) active.name = `Recovered Session ${new Date(active.recoveredAt).toLocaleString()}`;
+        }
+
+        const uniqueEndpoints = new Set();
+        (active.networkEvents || []).forEach(n => {
+          try { uniqueEndpoints.add(`${n.method} ${new URL(n.url).pathname}`); }
+          catch { uniqueEndpoints.add(`${n.method} ${n.url}`); }
+        });
+        active.apiEndpoints = [...uniqueEndpoints];
+
+        const completed = stored.completedSessions || [];
+        completed.unshift(active);
+        if (completed.length > 20) completed.length = 20;
+
+        // Detach any lingering CDP debuggers. The hydrated trackedTabIds list
+        // is the best hint we have for which tabs to detach.
+        for (const tabId of trackedTabIds) {
+          try { await detachCDPDebugger(tabId); } catch {}
+        }
+
+        try {
+          await chrome.storage.local.set({
+            completedSessions: completed,
+            lastSession: active,
+            activeSession: null,
+            isRecording: false,
+            activeTabId: null,
+            trackedTabIds: []
+          });
+        } catch (e) {
+          console.error('[AgentScribe] RECOVER write failed:', e?.message || e);
+          sendResponse({ success: false, reason: 'write_failed', error: e?.message || String(e) });
+          return;
+        }
+
+        // Clear in-memory state too — we just nuked the active session.
+        isRecording = false;
+        activeTabId = null;
+        trackedTabIds = new Set();
+        sessionBuffer = null;
+        domBuffer = [];
+        networkBuffer = [];
+        pendingRequests = new Map();
+        cdpAttached = new Map();
+
+        sendResponse({
+          success: true,
+          session: {
+            id: active.id,
+            name: active.name,
+            domEventCount: active.events?.length || 0,
+            networkEventCount: active.networkEvents?.length || 0,
+            recoveredTruncatedCount: recoveredTruncated
+          }
+        });
+      } catch (e) {
+        console.error('[AgentScribe] RECOVER_ACTIVE_SESSION failed:', e);
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
     return true;
   }
 

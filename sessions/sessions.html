@@ -535,6 +535,127 @@
       .session-row { flex-direction: column; align-items: stretch; }
       .session-actions { justify-content: space-between; }
     }
+
+    /* --- Storage Debug Panel --- */
+    .debug-panel {
+      background: #15110d;
+      border: 1px solid #3a2a1e;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 12px;
+    }
+
+    .debug-panel .debug-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      cursor: pointer;
+      user-select: none;
+      color: #fcd34d;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+
+    .debug-panel .debug-header:hover { background: #1a140f; }
+    .debug-panel.expanded .debug-header { border-bottom: 1px solid #3a2a1e; }
+
+    .debug-panel .debug-caret {
+      font-size: 10px;
+      color: #888;
+      transition: transform 0.15s;
+    }
+
+    .debug-panel.expanded .debug-caret { transform: rotate(90deg); }
+
+    .debug-panel .debug-body {
+      display: none;
+      padding: 10px 14px 14px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+      color: #ccc;
+    }
+
+    .debug-panel.expanded .debug-body { display: block; }
+
+    .debug-section { margin-top: 8px; }
+    .debug-section:first-child { margin-top: 0; }
+
+    .debug-section h4 {
+      font-size: 10px;
+      color: #fcd34d;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+      font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+      font-weight: 700;
+    }
+
+    .debug-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 3px 0;
+      border-bottom: 1px dotted #2a2018;
+    }
+
+    .debug-row:last-child { border-bottom: none; }
+    .debug-row .k { color: #aaa; }
+    .debug-row .v { color: #fcd34d; font-variant-numeric: tabular-nums; }
+    .debug-row .v.zero { color: #555; }
+    .debug-row .v.large { color: #f87171; font-weight: 700; }
+
+    .debug-actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .debug-btn {
+      padding: 6px 12px;
+      background: #2a1f14;
+      border: 1px solid #4a3520;
+      color: #fcd34d;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+      font-weight: 600;
+    }
+
+    .debug-btn:hover { background: #3a2a1c; border-color: #6a4a30; }
+    .debug-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .debug-btn.danger {
+      background: #2a1414;
+      border-color: #5a2020;
+      color: #ef4444;
+    }
+
+    .debug-btn.danger:hover { background: #3a1818; }
+
+    .debug-msg {
+      margin-top: 8px;
+      padding: 6px 10px;
+      background: #1a2419;
+      border-left: 2px solid #2a4a20;
+      color: #86efac;
+      font-size: 11px;
+      display: none;
+    }
+
+    .debug-msg.visible { display: block; }
+    .debug-msg.error { background: #241419; border-left-color: #5a2020; color: #f87171; }
+
+    .debug-keys {
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: 6px;
+      padding: 6px 8px;
+      background: #0d0a07;
+      border: 1px solid #2a2018;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
@@ -571,6 +692,31 @@
       <div class="stat">
         <div class="label">Storage</div>
         <div class="value" id="storageUsed">—</div>
+      </div>
+    </div>
+
+    <div class="debug-panel" id="debugPanel">
+      <div class="debug-header" id="debugToggle">
+        <span>&#9888; Storage Debug</span>
+        <span class="debug-caret">&#9656;</span>
+      </div>
+      <div class="debug-body">
+        <div class="debug-section">
+          <h4>Per-key bytes used</h4>
+          <div id="debugKeyTable"></div>
+        </div>
+        <div class="debug-section" id="debugActiveSection" style="display:none">
+          <h4>Orphaned activeSession detected</h4>
+          <div id="debugActiveDetail"></div>
+        </div>
+        <div class="debug-actions">
+          <button class="debug-btn" id="debugRefreshBtn">Refresh</button>
+          <button class="debug-btn" id="debugListKeysBtn">Show all storage keys</button>
+          <button class="debug-btn" id="debugRecoverBtn" style="display:none">Recover activeSession into Completed</button>
+          <button class="debug-btn danger" id="debugClearActiveBtn" style="display:none">Discard activeSession</button>
+        </div>
+        <div class="debug-msg" id="debugMsg"></div>
+        <div class="debug-keys" id="debugKeysList" style="display:none"></div>
       </div>
     </div>
 

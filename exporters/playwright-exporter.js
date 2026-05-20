@@ -4,22 +4,76 @@ export function exportPlaywright(session) {
     `// Session: ${session.id} | Recorded: ${new Date(session.startTime).toISOString()}`,
     `// URL: ${session.startUrl}`,
     `// Events: ${session.events.length} DOM | ${session.networkEvents.length} Network`,
-    ``,
-    `const { chromium } = require('playwright');`,
-    ``,
-    `(async () => {`,
-    `  const browser = await chromium.launch({ headless: false });`,
-    `  const context = await browser.newContext();`,
-    `  const page = await context.newPage();`,
     ``
   ];
+
+  // -------- Anti-bot stealth header (challenge layer detected) --------
+  const challengeLayer = session.challengeLayer;
+  if (challengeLayer) {
+    lines.push(`// ⚠️ CHALLENGE LAYER DETECTED: ${challengeLayer}`);
+    lines.push(`// Bare Playwright will fail. Use playwright-extra with stealth plugin:`);
+    lines.push(`//   const { chromium } = require('playwright-extra');`);
+    lines.push(`//   chromium.use(require('puppeteer-extra-plugin-stealth')());`);
+    lines.push(`// OR use the recorded browser session (storageState injection alone may not bypass).`);
+    lines.push(``);
+  }
+
+  lines.push(`const { chromium } = require('playwright');`);
+  lines.push(``);
+
+  // -------- Build storageState (cookies + per-origin localStorage) --------
+  const storageStateLiteral = buildStorageStateLiteral(session);
+
+  lines.push(`(async () => {`);
+  lines.push(`  const browser = await chromium.launch({ headless: false });`);
+
+  if (storageStateLiteral) {
+    lines.push(`  const context = await browser.newContext({`);
+    lines.push(`    storageState: ${indentBlock(storageStateLiteral, 4)}`);
+    lines.push(`  });`);
+  } else {
+    lines.push(`  const context = await browser.newContext();`);
+  }
+
+  lines.push(`  const page = await context.newPage();`);
+  lines.push(``);
+
+  // -------- CSRF helper (only if hidden_input source detected) --------
+  const csrfSources = session.authProfile?.csrf_token_sources;
+  const hasHiddenInputCsrf = Array.isArray(csrfSources)
+    ? csrfSources.some(s => (typeof s === 'string' && s.includes('hidden_input')) || s?.source === 'hidden_input')
+    : false;
+
+  if (hasHiddenInputCsrf) {
+    lines.push(`  // CSRF token helper — reads token from hidden form input before mutating requests`);
+    lines.push(`  async function readCSRFToken(page) {`);
+    lines.push(`    return await page.locator('[name="_csrf"], [name="authenticity_token"], [name="csrfmiddlewaretoken"]').first().getAttribute('value');`);
+    lines.push(`  }`);
+    lines.push(``);
+  }
 
   const actionEvents = session.events.filter(e =>
     ['click', 'input', 'navigation', 'scroll'].includes(e.type)
   );
 
   actionEvents.forEach((event, i) => {
-    lines.push(`  // Step ${i + 1} — ${event.type} @ ${formatTime(event.timestamp - session.startTime)}`);
+    const stepNum = i + 1;
+
+    // -------- 2FA breakpoint detection --------
+    if (eventNeedsOtpBreakpoint(event)) {
+      const sel = event.type === 'input' ? bestSelector(event.element) : (event.element ? bestSelector(event.element) : 'input[autocomplete="one-time-code"]');
+      lines.push(`  // PAUSE: 2FA required at step ${stepNum} — set process.env.OTP_CODE or pause for manual input`);
+      lines.push(`  // await page.pause(); // uncomment for manual OTP entry`);
+      lines.push(`  const otp = process.env.OTP_CODE || '000000';`);
+      lines.push(`  await page.fill(${quote(sel)}, otp);`);
+      lines.push(``);
+      // For OTP input steps, the OTP fill replaces the normal fill — skip the default emit.
+      if (event.type === 'input') {
+        return;
+      }
+    }
+
+    lines.push(`  // Step ${stepNum} — ${event.type} @ ${formatTime(event.timestamp - session.startTime)}`);
 
     if (event.type === 'navigation') {
       lines.push(`  await page.goto(${quote(event.url)});`);
@@ -27,6 +81,11 @@ export function exportPlaywright(session) {
       const sel = bestSelector(event.element);
       lines.push(`  await page.click(${quote(sel)});`);
       if (event.triggeredRequests?.length) {
+        // CSRF refresh hint before mutating requests
+        if (hasHiddenInputCsrf && event.triggeredRequests.some(r => /^(POST|PUT|PATCH|DELETE)$/i.test(r.method || ''))) {
+          lines.push(`  // CSRF: token may need to be re-read for the mutating request below`);
+          lines.push(`  // const _csrf = await readCSRFToken(page);`);
+        }
         event.triggeredRequests.forEach(req => {
           lines.push(`  // -> ${req.method} ${truncate(req.url, 100)} [${req.responseStatus}]`);
           if (req.postData) {
@@ -64,6 +123,147 @@ export function exportPlaywright(session) {
   };
 }
 
+// ------------------------------------------------------------------
+// storageState construction
+// ------------------------------------------------------------------
+
+function buildStorageStateLiteral(session) {
+  const cookies = extractCookiesForPlaywright(session);
+  const origins = extractOriginsForPlaywright(session);
+
+  if (cookies.length === 0 && origins.length === 0) {
+    return null;
+  }
+
+  const obj = { cookies, origins };
+  return JSON.stringify(obj, null, 2);
+}
+
+function extractCookiesForPlaywright(session) {
+  const snapshots = session.cookieSnapshots;
+  if (!Array.isArray(snapshots) || snapshots.length === 0) return [];
+
+  const last = snapshots[snapshots.length - 1];
+  const rawCookies = last?.cookies || [];
+  if (!Array.isArray(rawCookies)) return [];
+
+  return rawCookies.map(mapChromeCookieToPlaywright).filter(Boolean);
+}
+
+function mapChromeCookieToPlaywright(c) {
+  if (!c || typeof c !== 'object') return null;
+  if (typeof c.name !== 'string' || typeof c.value !== 'string') return null;
+
+  // Domain: Chrome cookies always have `domain`. Strip nothing — Playwright accepts leading-dot domains.
+  const domain = typeof c.domain === 'string' ? c.domain : '';
+  const path = typeof c.path === 'string' ? c.path : '/';
+
+  // expires: Chrome `expirationDate` is seconds since epoch (float). Session cookies → -1.
+  let expires = -1;
+  if (typeof c.expirationDate === 'number' && isFinite(c.expirationDate)) {
+    expires = Math.floor(c.expirationDate);
+  } else if (typeof c.expires === 'number' && isFinite(c.expires)) {
+    expires = Math.floor(c.expires);
+  }
+
+  const httpOnly = c.httpOnly === true;
+  const secure = c.secure === true;
+  const sameSite = mapSameSite(c.sameSite);
+
+  return {
+    name: c.name,
+    value: c.value,
+    domain,
+    path,
+    expires,
+    httpOnly,
+    secure,
+    sameSite
+  };
+}
+
+function mapSameSite(v) {
+  if (typeof v !== 'string') return 'Lax';
+  const lower = v.toLowerCase();
+  if (lower === 'strict') return 'Strict';
+  if (lower === 'lax') return 'Lax';
+  if (lower === 'no_restriction' || lower === 'none' || lower === 'unspecified') return 'None';
+  return 'Lax';
+}
+
+function extractOriginsForPlaywright(session) {
+  const snapshots = session.storageSnapshots;
+  if (!Array.isArray(snapshots) || snapshots.length === 0) return [];
+
+  // Group last snapshot per origin so we get the freshest localStorage per host.
+  const byOrigin = new Map();
+  for (const snap of snapshots) {
+    const origin = deriveOrigin(snap);
+    if (!origin) continue;
+    byOrigin.set(origin, snap);
+  }
+
+  const origins = [];
+  for (const [origin, snap] of byOrigin.entries()) {
+    const ls = snap?.snapshot?.localStorage || snap?.localStorage;
+    if (!ls || typeof ls !== 'object') continue;
+
+    const entries = Object.entries(ls)
+      .filter(([k, v]) => typeof k === 'string' && (typeof v === 'string' || v == null))
+      .map(([name, value]) => ({ name, value: value == null ? '' : String(value) }));
+
+    if (entries.length === 0) continue;
+
+    origins.push({ origin, localStorage: entries });
+  }
+
+  return origins;
+}
+
+function deriveOrigin(snap) {
+  if (!snap) return null;
+  if (typeof snap.origin === 'string' && snap.origin) return snap.origin;
+  const url = snap.url || snap.pageUrl || snap.location;
+  if (typeof url !== 'string') return null;
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------------
+// 2FA / OTP step detection
+// ------------------------------------------------------------------
+
+function eventNeedsOtpBreakpoint(event) {
+  if (!event) return false;
+  // Match any field signal indicating runtime input is required or OTP-kind.
+  const el = event.element || {};
+  const fields = [el, event.field, event.flagDetail].filter(Boolean);
+  for (const f of fields) {
+    if (!f || typeof f !== 'object') continue;
+    if (f.field_kind === 'otp') return true;
+    if (f.runtime_input_required === true) return true;
+  }
+  // Also: explicit flag on the event itself.
+  if (event.field_kind === 'otp') return true;
+  if (event.runtime_input_required === true) return true;
+  return false;
+}
+
+// ------------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------------
+
+function indentBlock(text, spaces) {
+  const pad = ' '.repeat(spaces);
+  const parts = String(text).split('\n');
+  // First line stays where the caller placed it; subsequent lines get padded.
+  return parts.map((line, idx) => idx === 0 ? line : pad + line).join('\n');
+}
+
 function bestSelector(element) {
   if (!element) return 'body';
   if (element.id) {
@@ -95,4 +295,3 @@ function formatTime(ms) {
   const m = Math.floor(s / 60);
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
-

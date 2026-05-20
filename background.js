@@ -1,5 +1,6 @@
-import { correlate } from './correlation-engine.js';
+import { correlate, inferPagination, tagMutation } from './correlation-engine.js';
 import { inferSessionName, inferStartName } from './session-namer.js';
+import { classifyRequest, classifyHeader } from './auth-detector.js';
 
 // --- State (module-scope; rehydrated on SW wake) ---
 
@@ -124,6 +125,31 @@ async function detachCDPDebugger(tabId) {
   });
 }
 
+// --- Cookie snapshot (v1.0.13 — full state capture) ---
+
+async function snapshotCookies(url) {
+  if (!url) return [];
+  try {
+    return await chrome.cookies.getAll({ url });
+  } catch (e) {
+    console.warn('[AgentScribe] cookie snapshot failed:', e?.message || e);
+    return [];
+  }
+}
+
+async function recordCookieSnapshot(url, trigger) {
+  if (!sessionBuffer) return;
+  if (!sessionBuffer.cookieSnapshots) sessionBuffer.cookieSnapshots = [];
+  const cookies = await snapshotCookies(url);
+  sessionBuffer.cookieSnapshots.push({
+    timestamp: Date.now(),
+    url,
+    trigger,
+    cookies
+  });
+  maybePersistSession();
+}
+
 function shouldCaptureRequest(req) {
   if (!CAPTURE_TYPES.includes(req.resourceType)) return false;
   const skipDomains = _cachedSettings?.analyticsFilterDomains || SKIP_DOMAINS;
@@ -205,8 +231,102 @@ function finalizeNetworkEvent(netEvent) {
     ...netEvent,
     correlatedToDomEventId: null
   };
+
+  // v1.0.13 Wave 3: enrich with auth-detector classification. Wrapped so a
+  // classifier exception cannot break the capture pipeline.
+  try {
+    const cookieSnap = sessionBuffer?.cookieSnapshots;
+    const cookies = (cookieSnap && cookieSnap.length > 0)
+      ? (cookieSnap[cookieSnap.length - 1].cookies || [])
+      : [];
+    const storageSnap = sessionBuffer?.storageSnapshots;
+    const storageSnapshot = (storageSnap && storageSnap.length > 0)
+      ? (storageSnap[storageSnap.length - 1].snapshot || {})
+      : {};
+    event.auth_classification = classifyRequest({
+      headers: event.headers || {},
+      cookies,
+      storageSnapshot,
+      url: event.url,
+      method: event.method
+    });
+  } catch (e) {
+    console.warn('[AgentScribe] auth-detector classifyRequest failed:', e?.message || e);
+    event.auth_classification = null;
+  }
+
+  // Wave 6 hotfix: wire inferPagination (correlation-engine.js).
+  // Result feeds mcp-exporter#buildPaginationStrategies via ev.pagination.
+  try {
+    event.pagination = inferPagination(event);
+  } catch (e) {
+    console.warn('[AgentScribe] inferPagination failed:', e?.message || e);
+    event.pagination = null;
+  }
+
+  // Wave 6 hotfix: wire tagMutation (correlation-engine.js).
+  // Result feeds mcp-exporter#buildSemanticEndpoints via r.mutates_state.
+  try {
+    event.mutates_state = tagMutation(event);
+  } catch (e) {
+    console.warn('[AgentScribe] tagMutation failed:', e?.message || e);
+    event.mutates_state = null;
+  }
+
   networkBuffer.push(event);
   addToSession('networkEvents', event);
+}
+
+// v1.0.13 Wave 3: session-level auth profile aggregation.
+// Walks all network events with auth_classification, picks the highest-
+// confidence scheme, lists all sources/refresh endpoints/CSRF sources/JWTs.
+function aggregateAuthProfile(networkEvents) {
+  const profile = {
+    auth_scheme: 'none',
+    confidence: 0,
+    auth_value_sources: [],
+    schemes_seen: [],
+    jwt_decoded: null,
+    expires_at: null,
+    refresh_endpoint_candidates: [],
+    csrf_token_sources: []
+  };
+  if (!Array.isArray(networkEvents) || networkEvents.length === 0) return profile;
+
+  const sourceSet = new Set();
+  const schemeSet = new Set();
+  const refreshSet = new Set();
+  const csrfSet = new Set();
+  let bestConfidence = -1;
+  let bestJwt = null;
+  let bestExpiresAt = null;
+
+  for (const ev of networkEvents) {
+    const a = ev && ev.auth_classification;
+    if (!a) continue;
+    if (a.auth_scheme && a.auth_scheme !== 'none') schemeSet.add(a.auth_scheme);
+    if (a.auth_value_source) sourceSet.add(a.auth_value_source);
+    if (a.refresh_endpoint_hint) refreshSet.add(a.refresh_endpoint_hint);
+    if (a.csrf_token_source) csrfSet.add(a.csrf_token_source);
+    const conf = typeof a.confidence === 'number' ? a.confidence : 0;
+    if (conf > bestConfidence) {
+      bestConfidence = conf;
+      profile.auth_scheme = a.auth_scheme || 'none';
+      profile.confidence = conf;
+    }
+    if (a.jwt_decoded && !bestJwt) {
+      bestJwt = a.jwt_decoded;
+      bestExpiresAt = a.expires_at || null;
+    }
+  }
+
+  profile.auth_value_sources = [...sourceSet];
+  profile.schemes_seen = [...schemeSet];
+  profile.refresh_endpoint_candidates = [...refreshSet];
+  profile.csrf_token_sources = [...csrfSet];
+  profile.jwt_decoded = bestJwt;
+  profile.expires_at = bestExpiresAt;
+  return profile;
 }
 
 // --- webRequest Fallback ---
@@ -255,7 +375,7 @@ chrome.webRequest.onSendHeaders.addListener(
     }, {});
   },
   { urls: ['<all_urls>'] },
-  ['requestHeaders']
+  ['requestHeaders', 'extraHeaders']
 );
 
 chrome.webRequest.onCompleted.addListener(
@@ -274,7 +394,7 @@ chrome.webRequest.onCompleted.addListener(
     pendingRequests.delete(key);
   },
   { urls: ['<all_urls>'] },
-  ['responseHeaders']
+  ['responseHeaders', 'extraHeaders']
 );
 
 chrome.webRequest.onErrorOccurred.addListener(
@@ -308,8 +428,15 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   if (!isRecording) return;
   if (tab.openerTabId && trackedTabIds.has(tab.openerTabId)) {
     trackedTabIds.add(tab.id);
-    if (sessionBuffer && !sessionBuffer.tabIds.includes(tab.id)) {
-      sessionBuffer.tabIds.push(tab.id);
+    if (sessionBuffer) {
+      if (!sessionBuffer.tabIds.includes(tab.id)) {
+        sessionBuffer.tabIds.push(tab.id);
+      }
+      // v1.0.13: record auto-followed tabs for OAuth/payment popups
+      if (!sessionBuffer.tabsAttached) sessionBuffer.tabsAttached = [];
+      if (!sessionBuffer.tabsAttached.includes(tab.id)) {
+        sessionBuffer.tabsAttached.push(tab.id);
+      }
     }
     await chrome.storage.local.set({ trackedTabIds: [...trackedTabIds] });
     attachCDPToNewTab(tab.id);
@@ -359,6 +486,9 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
   domBuffer.push(navEvent);
   addToSession('events', navEvent);
 
+  // v1.0.13: cookie snapshot on each navigation
+  await recordCookieSnapshot(details.url, 'navigation');
+
   // Re-inject helpers — manifest content.js auto-loads; helpers do not
   try {
     await chrome.scripting.executeScript({ target: { tabId: details.tabId }, files: ['field-scanner.js'] });
@@ -366,6 +496,13 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
   } catch (e) {
     // page may not allow injection (e.g. chrome:// pages)
   }
+
+  // Wave 6 hotfix: on every navigation, trigger a re-scan in the content
+  // script. scanFields() now also runs the challenge-layer probe, so the
+  // session's challengeLayer field stays current across multi-page sessions.
+  try {
+    chrome.tabs.sendMessage(details.tabId, { type: 'RESCAN_FIELDS' }).catch(() => {});
+  } catch (e) { /* swallow */ }
 });
 
 // --- Tab removed: auto-stop on empty ---
@@ -437,7 +574,18 @@ async function startRecording(tabId) {
     networkEvents: [],
     injectableFields: [],
     apiEndpoints: [],
-    droppedEvents: 0
+    droppedEvents: 0,
+    cookieSnapshots: [],
+    tabsAttached: [tabId],
+    // v1.0.13 Wave 3: content-script telemetry sinks
+    storageSnapshots: [],
+    bundleFindings: [],
+    wsConnections: [],
+    wsFrames: [],
+    // v1.0.13 Wave 6 hotfix: anti-bot challenge layer detection +
+    // page-context fetch/XHR proxy buffer (secondary; chrome.webRequest is primary).
+    challengeLayer: null,
+    fetchEvents: []
   };
 
   _lastStorageWrite = Date.now();
@@ -450,6 +598,9 @@ async function startRecording(tabId) {
     activeTabId: tabId,
     trackedTabIds: [...trackedTabIds]
   });
+
+  // v1.0.13: cookie snapshot at session start
+  await recordCookieSnapshot(tab.url, 'start');
 
   const networkMethod = settings.networkMethod || 'cdp';
   if (networkMethod === 'webrequest') {
@@ -495,6 +646,20 @@ async function stopRecording() {
 }
 
 async function _stopRecordingImpl() {
+  // v1.0.13: cookie snapshot at session end (before flipping isRecording)
+  if (sessionBuffer) {
+    let endUrl = null;
+    for (const tabId of trackedTabIds) {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        if (t?.url) { endUrl = t.url; break; }
+      } catch {}
+    }
+    if (endUrl) {
+      await recordCookieSnapshot(endUrl, 'end');
+    }
+  }
+
   isRecording = false;
 
   for (const tabId of trackedTabIds) {
@@ -527,6 +692,15 @@ async function _stopRecordingImpl() {
     catch { uniqueEndpoints.add(`${n.method} ${n.url}`); }
   });
   sessionBuffer.apiEndpoints = [...uniqueEndpoints];
+
+  // v1.0.13 Wave 3: aggregate session-level auth profile from per-event
+  // classifications. Wrapped — must not break session finalization.
+  try {
+    sessionBuffer.authProfile = aggregateAuthProfile(sessionBuffer.networkEvents);
+  } catch (e) {
+    console.warn('[AgentScribe] aggregateAuthProfile failed:', e?.message || e);
+    sessionBuffer.authProfile = null;
+  }
 
   const stored = await chrome.storage.local.get('completedSessions');
   const completed = stored.completedSessions || [];
@@ -793,6 +967,219 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ success: true });
     })();
     return true;
+  }
+
+  // --- v1.0.13 Wave 3: content-script telemetry handlers ---
+
+  if (msg.type === 'STORAGE_SNAPSHOT') {
+    (async () => {
+      await hydrateOnce();
+      if (!isRecording || !sessionBuffer) return;
+      const senderTabId = sender.tab?.id;
+      if (senderTabId && !trackedTabIds.has(senderTabId)) return;
+      if (!sessionBuffer.storageSnapshots) sessionBuffer.storageSnapshots = [];
+      sessionBuffer.storageSnapshots.push({
+        timestamp: msg.timestamp || Date.now(),
+        url: msg.url || sender.tab?.url || null,
+        snapshot: msg.snapshot || {}
+      });
+      maybePersistSession();
+    })();
+    return false;
+  }
+
+  if (msg.type === 'BUNDLE_FINDINGS') {
+    (async () => {
+      await hydrateOnce();
+      if (!isRecording || !sessionBuffer) return;
+      const senderTabId = sender.tab?.id;
+      if (senderTabId && !trackedTabIds.has(senderTabId)) return;
+      if (!sessionBuffer.bundleFindings) sessionBuffer.bundleFindings = [];
+      const url = msg.url || sender.tab?.url || null;
+      const incoming = msg.findings || {};
+      const ts = msg.timestamp || Date.now();
+      // Merge with any existing entry for the same URL — concat lists, dedupe.
+      const existing = sessionBuffer.bundleFindings.find(b => b.url === url);
+      if (existing) {
+        const merged = existing.findings || {};
+        const mergeListBy = (key, dedupeKeyFn) => {
+          const a = Array.isArray(merged[key]) ? merged[key] : [];
+          const b = Array.isArray(incoming[key]) ? incoming[key] : [];
+          const seen = new Set(a.map(dedupeKeyFn));
+          for (const item of b) {
+            const k = dedupeKeyFn(item);
+            if (!seen.has(k)) { a.push(item); seen.add(k); }
+          }
+          merged[key] = a;
+        };
+        const mergeListStr = (key) => {
+          const a = Array.isArray(merged[key]) ? merged[key] : [];
+          const b = Array.isArray(incoming[key]) ? incoming[key] : [];
+          merged[key] = [...new Set([...a, ...b])];
+        };
+        mergeListStr('api_base_urls');
+        mergeListBy('discovered_endpoints', (e) => `${e?.method || ''} ${e?.url_pattern || e?.url || ''}`);
+        mergeListBy('signing_functions', (s) => `${s?.name || ''}:${s?.algorithm || ''}:${s?.location || ''}`);
+        mergeListStr('refresh_endpoint_candidates');
+        mergeListStr('graphql_endpoints');
+        existing.findings = merged;
+        existing.timestamp = ts;
+      } else {
+        sessionBuffer.bundleFindings.push({ url, findings: incoming, timestamp: ts });
+      }
+      maybePersistSession();
+    })();
+    return false;
+  }
+
+  if (msg.type === 'WS_EVENT') {
+    (async () => {
+      await hydrateOnce();
+      if (!isRecording || !sessionBuffer) return;
+      const senderTabId = sender.tab?.id;
+      if (senderTabId && !trackedTabIds.has(senderTabId)) return;
+      if (!sessionBuffer.wsConnections) sessionBuffer.wsConnections = [];
+      if (!sessionBuffer.wsFrames) sessionBuffer.wsFrames = [];
+      const payload = msg.payload || {};
+      const ts = msg.timestamp || Date.now();
+      try {
+        if (payload.type === 'connect') {
+          sessionBuffer.wsConnections.push({
+            id: payload.id || crypto.randomUUID(),
+            url: payload.url || null,
+            protocols: payload.protocols || null,
+            tabId: senderTabId || null,
+            connectedAt: ts,
+            closedAt: null,
+            closeCode: null,
+            closeReason: null
+          });
+        } else if (payload.type === 'frame') {
+          sessionBuffer.wsFrames.push({
+            id: crypto.randomUUID(),
+            connectionId: payload.id || null,
+            url: payload.url || null,
+            direction: payload.direction || null,  // 'send' | 'recv'
+            data: payload.data ?? null,
+            timestamp: ts,
+            tabId: senderTabId || null
+          });
+        } else if (payload.type === 'close') {
+          // Mutate the matching open connection (by id, falling back to url).
+          let target = null;
+          if (payload.id) {
+            target = sessionBuffer.wsConnections.find(c => c.id === payload.id && c.closedAt === null);
+          }
+          if (!target && payload.url) {
+            // last-open match on url
+            for (let i = sessionBuffer.wsConnections.length - 1; i >= 0; i--) {
+              if (sessionBuffer.wsConnections[i].url === payload.url && sessionBuffer.wsConnections[i].closedAt === null) {
+                target = sessionBuffer.wsConnections[i];
+                break;
+              }
+            }
+          }
+          if (target) {
+            target.closedAt = ts;
+            target.closeCode = payload.code ?? null;
+            target.closeReason = payload.reason ?? null;
+          } else {
+            // No matching open connection — record an orphan close for diagnostics.
+            sessionBuffer.wsConnections.push({
+              id: payload.id || crypto.randomUUID(),
+              url: payload.url || null,
+              protocols: null,
+              tabId: senderTabId || null,
+              connectedAt: null,
+              closedAt: ts,
+              closeCode: payload.code ?? null,
+              closeReason: payload.reason ?? null,
+              orphanClose: true
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[AgentScribe] WS_EVENT handler failed:', e?.message || e);
+      }
+      maybePersistSession();
+    })();
+    return false;
+  }
+
+  // --- v1.0.13 Wave 6 hotfix: challenge layer + fetch proxy ---
+
+  if (msg.type === 'CHALLENGE_LAYER') {
+    (async () => {
+      await hydrateOnce();
+      if (!isRecording || !sessionBuffer) return;
+      const senderTabId = sender.tab?.id;
+      if (senderTabId && !trackedTabIds.has(senderTabId)) return;
+      try {
+        // Last-write-wins, but prefer most recent NON-NULL across the session.
+        // A null probe from a later page doesn't clobber a positive detection
+        // from an earlier page (the agent still needs to know "this session
+        // touched Cloudflare somewhere").
+        const incoming = msg.layer || null;
+        if (incoming) {
+          sessionBuffer.challengeLayer = incoming;
+        } else if (!sessionBuffer.challengeLayer) {
+          // No prior detection AND probe says clear -> record the null so
+          // the field is explicitly set rather than undefined.
+          sessionBuffer.challengeLayer = null;
+        }
+        // Also keep a log of probes for diagnostics (bounded).
+        if (!sessionBuffer.challengeLayerProbes) sessionBuffer.challengeLayerProbes = [];
+        sessionBuffer.challengeLayerProbes.push({
+          timestamp: msg.timestamp || Date.now(),
+          url: msg.url || sender.tab?.url || null,
+          layer: incoming
+        });
+        if (sessionBuffer.challengeLayerProbes.length > 50) {
+          sessionBuffer.challengeLayerProbes.splice(0, sessionBuffer.challengeLayerProbes.length - 50);
+        }
+      } catch (e) {
+        console.warn('[AgentScribe] CHALLENGE_LAYER handler failed:', e?.message || e);
+      }
+      maybePersistSession();
+    })();
+    return false;
+  }
+
+  if (msg.type === 'FETCH_EVENT') {
+    (async () => {
+      await hydrateOnce();
+      if (!isRecording || !sessionBuffer) return;
+      const senderTabId = sender.tab?.id;
+      if (senderTabId && !trackedTabIds.has(senderTabId)) return;
+      try {
+        if (!sessionBuffer.fetchEvents) sessionBuffer.fetchEvents = [];
+        const payload = msg.payload || {};
+        sessionBuffer.fetchEvents.push({
+          id: crypto.randomUUID(),
+          tabId: senderTabId || null,
+          timestamp: payload.timestamp || Date.now(),
+          url: payload.url || null,
+          method: payload.method || null,
+          api: payload.api || null,               // 'fetch' | 'xhr'
+          phase: payload.phase || null,           // 'request' | 'response' | 'error'
+          requestId: payload.requestId || null,   // ties request<->response
+          requestHeaders: payload.requestHeaders || null,
+          requestBody: payload.requestBody || null,
+          responseStatus: payload.responseStatus ?? null,
+          responseHeaders: payload.responseHeaders || null,
+          responseBody: payload.responseBody || null,
+          error: payload.error || null
+        });
+        // Soft cap: don't let runaway page-context capture eat memory.
+        if (sessionBuffer.fetchEvents.length > 2000) {
+          sessionBuffer.fetchEvents.splice(0, sessionBuffer.fetchEvents.length - 2000);
+        }
+      } catch (e) {
+        console.warn('[AgentScribe] FETCH_EVENT handler failed:', e?.message || e);
+      }
+      maybePersistSession();
+    })();
+    return false;
   }
 });
 

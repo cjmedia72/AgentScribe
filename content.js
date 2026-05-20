@@ -1,3 +1,4 @@
+// MANIFEST TODO: add ws-capture.js, storage-snapshot.js, bundle-analyzer.js to web_accessible_resources for chrome.runtime.getURL() to work cross-context.
 (() => {
   if (window.__agentscribe_content_loaded) return;
   window.__agentscribe_content_loaded = true;
@@ -208,6 +209,9 @@
   // --- Field Scanning ---
 
   function scanFields() {
+    // Wave 6 hotfix: also probe anti-bot challenge layer on each scan pass.
+    runChallengeLayerProbe();
+
     const scanner = window.__agentscribe?.scanFields;
     if (scanner) {
       const fields = scanner(document, null, window.location.href);
@@ -510,6 +514,280 @@
       chrome.runtime.sendMessage({ type: 'DOM_EVENT', event });
     } catch (e) {}
   }
+
+  // --- Wave 3: storage snapshot / bundle analyzer / ws-capture wiring ---
+  //
+  // All logic here is GATED on `capturing`. Fail silently if modules missing.
+  // Modules are loaded once and cached. Listeners installed lazily on first
+  // startCapturing() call; payloads only sent while capturing is true.
+
+  let _wave3Initialized = false;
+  let _snapshotStorageFn = null;       // from storage-snapshot.js
+  let _analyzeBundleFn = null;         // from bundle-analyzer.js
+  let _wsMessageListenerInstalled = false;
+  let _wsScriptInjected = false;
+  let _bundleAnalyzedThisPage = false;
+  let _pageEventsBound = false;
+
+  async function loadStorageSnapshot() {
+    if (_snapshotStorageFn) return _snapshotStorageFn;
+    try {
+      const url = chrome.runtime.getURL('storage-snapshot.js');
+      const mod = await import(url);
+      _snapshotStorageFn = mod.snapshotStorage || mod.default?.snapshotStorage || null;
+    } catch (e) {
+      _snapshotStorageFn = null;
+    }
+    return _snapshotStorageFn;
+  }
+
+  async function loadBundleAnalyzer() {
+    if (_analyzeBundleFn) return _analyzeBundleFn;
+    try {
+      const url = chrome.runtime.getURL('bundle-analyzer.js');
+      const mod = await import(url);
+      _analyzeBundleFn = mod.analyzeBundle || mod.default?.analyzeBundle || null;
+    } catch (e) {
+      _analyzeBundleFn = null;
+    }
+    return _analyzeBundleFn;
+  }
+
+  async function runStorageSnapshot(reason) {
+    if (!capturing) return;
+    try {
+      const fn = await loadStorageSnapshot();
+      if (!fn || !capturing) return;
+      const snapshot = await fn();
+      if (!capturing) return;
+      chrome.runtime.sendMessage({
+        type: 'STORAGE_SNAPSHOT',
+        snapshot,
+        timestamp: Date.now(),
+        url: window.location.href,
+        reason: reason || 'unknown'
+      });
+    } catch (e) { /* swallow */ }
+  }
+
+  async function runBundleAnalysis() {
+    if (!capturing) return;
+    if (_bundleAnalyzedThisPage) return;
+    _bundleAnalyzedThisPage = true;
+    try {
+      const fn = await loadBundleAnalyzer();
+      if (!fn || !capturing) return;
+
+      const SCRIPT_LIMIT = 20;
+      const BYTE_LIMIT = 2 * 1024 * 1024; // 2MB per script
+      const FETCH_TIMEOUT_MS = 5000;
+
+      const scriptEls = Array.from(document.querySelectorAll('script[src]')).slice(0, SCRIPT_LIMIT);
+      const scriptUrls = [];
+      const scriptSources = [];
+
+      for (const el of scriptEls) {
+        const src = el.src;
+        if (!src) continue;
+        scriptUrls.push(src);
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+          const resp = await fetch(src, { signal: ctrl.signal, credentials: 'omit' });
+          clearTimeout(t);
+          if (!resp.ok) { scriptSources.push(''); continue; }
+          const text = await resp.text();
+          scriptSources.push(text.length > BYTE_LIMIT ? text.slice(0, BYTE_LIMIT) : text);
+        } catch (e) {
+          scriptSources.push('');
+        }
+        if (!capturing) return;
+      }
+
+      const findings = fn({ scriptUrls, scriptSources });
+      if (!capturing) return;
+      chrome.runtime.sendMessage({
+        type: 'BUNDLE_FINDINGS',
+        findings,
+        url: window.location.href
+      });
+    } catch (e) { /* swallow */ }
+  }
+
+  function injectWsCapture() {
+    if (_wsScriptInjected) return;
+    try {
+      const url = chrome.runtime.getURL('ws-capture.js');
+      const script = document.createElement('script');
+      script.src = url;
+      script.type = 'text/javascript';
+      script.async = false;
+      script.onload = () => { try { script.remove(); } catch (e) {} };
+      (document.head || document.documentElement).appendChild(script);
+      _wsScriptInjected = true;
+    } catch (e) { /* swallow */ }
+  }
+
+  // Wave 6 hotfix: page-context fetch/XHR proxy injection (MAIN world).
+  let _fetchScriptInjected = false;
+  function injectFetchCapture() {
+    if (_fetchScriptInjected) return;
+    try {
+      const url = chrome.runtime.getURL('fetch-capture.js');
+      const script = document.createElement('script');
+      script.src = url;
+      script.type = 'text/javascript';
+      script.async = false;
+      script.onload = () => { try { script.remove(); } catch (e) {} };
+      (document.head || document.documentElement).appendChild(script);
+      _fetchScriptInjected = true;
+    } catch (e) { /* swallow */ }
+  }
+
+  function handleFetchWindowMessage(e) {
+    if (!capturing) return;
+    try {
+      const data = e.data;
+      if (!data || data.source !== 'agentscribe-fetch') return;
+      chrome.runtime.sendMessage({ type: 'FETCH_EVENT', payload: data });
+    } catch (err) { /* swallow */ }
+  }
+
+  // Wave 6 hotfix: anti-bot challenge layer probe.
+  // field-scanner.js exposes detectChallengeLayer on window.__agentscribe.
+  // We snapshot whatever it returns (or null) and ship via CHALLENGE_LAYER message.
+  let _lastChallengeLayerSent = undefined;
+  function runChallengeLayerProbe() {
+    if (!capturing) return;
+    try {
+      const fn = window.__agentscribe?.detectChallengeLayer;
+      if (typeof fn !== 'function') return;
+      let layer = null;
+      try { layer = fn(document) || null; } catch (_) { layer = null; }
+      // Only send when the value changes — reduces noise on every mutation tick.
+      // But always send the first probe so the field is set even if null.
+      if (layer === _lastChallengeLayerSent) return;
+      _lastChallengeLayerSent = layer;
+      chrome.runtime.sendMessage({
+        type: 'CHALLENGE_LAYER',
+        layer,
+        url: window.location.href,
+        timestamp: Date.now()
+      });
+    } catch (e) { /* swallow */ }
+  }
+
+  function handleWsWindowMessage(e) {
+    if (!capturing) return;
+    try {
+      const data = e.data;
+      if (!data || data.source !== 'agentscribe-ws') return;
+      chrome.runtime.sendMessage({ type: 'WS_EVENT', payload: data });
+    } catch (err) { /* swallow */ }
+  }
+
+  function bindPageEvents() {
+    if (_pageEventsBound) return;
+    _pageEventsBound = true;
+    try {
+      // Initial / late DOMContentLoaded snapshot
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (capturing) {
+            runStorageSnapshot('domcontentloaded');
+            // Wave 6: re-probe challenge layer once DOM is parsed.
+            runChallengeLayerProbe();
+          }
+        }, { once: true });
+      }
+      // Pre-navigation snapshot
+      window.addEventListener('pagehide', () => {
+        if (capturing) runStorageSnapshot('pagehide');
+      });
+      // Bundle analysis at page load
+      if (document.readyState === 'complete') {
+        // already loaded — defer to next tick
+        setTimeout(() => { if (capturing) runBundleAnalysis(); }, 0);
+      } else {
+        window.addEventListener('load', () => {
+          if (capturing) {
+            runBundleAnalysis();
+            // Wave 6: cookies/iframes/scripts may not have settled until load.
+            runChallengeLayerProbe();
+          }
+        }, { once: true });
+      }
+    } catch (e) { /* swallow */ }
+  }
+
+  function wave3OnStart() {
+    try {
+      // Reset per-page bundle gate when a new recording begins so a fresh
+      // session re-analyzes scripts that were already loaded.
+      _bundleAnalyzedThisPage = false;
+
+      // Wave 6: reset challenge-layer dedupe so the next session re-probes.
+      _lastChallengeLayerSent = undefined;
+
+      // Inject the MAIN-world WS capture script
+      injectWsCapture();
+
+      // Wave 6 hotfix: inject MAIN-world fetch/XHR proxy
+      injectFetchCapture();
+
+      // Install the window.message listener once
+      if (!_wsMessageListenerInstalled) {
+        window.addEventListener('message', handleWsWindowMessage);
+        // Wave 6: also listen for fetch-capture frames (same envelope pattern).
+        window.addEventListener('message', handleFetchWindowMessage);
+        _wsMessageListenerInstalled = true;
+      }
+
+      // Bind page lifecycle hooks (idempotent)
+      bindPageEvents();
+
+      // Capture start = a "begin capturing" event — take an immediate snapshot
+      runStorageSnapshot('recording-start');
+
+      // Wave 6: probe the challenge layer at session start.
+      // field-scanner.js is injected by background.js as a content script, so
+      // window.__agentscribe.detectChallengeLayer is available shortly after
+      // RECORDING_STARTED. Probe immediately and again after a tick to catch
+      // the case where field-scanner hasn't finished its IIFE yet.
+      runChallengeLayerProbe();
+      setTimeout(runChallengeLayerProbe, 300);
+      setTimeout(runChallengeLayerProbe, 1500);
+
+      // If the page is already loaded, run bundle analysis now
+      if (document.readyState === 'complete') {
+        setTimeout(() => { if (capturing) runBundleAnalysis(); }, 0);
+      }
+
+      _wave3Initialized = true;
+    } catch (e) { /* swallow */ }
+  }
+
+  function wave3OnStop() {
+    // Listeners stay installed; their handlers no-op when !capturing.
+    // We just flip flags so the next start re-runs bundle analysis.
+    _bundleAnalyzedThisPage = false;
+  }
+
+  // Patch startCapturing/stopCapturing to fire the Wave 3 lifecycle hooks.
+  const _origStart = startCapturing;
+  const _origStop = stopCapturing;
+  // eslint-disable-next-line no-func-assign
+  startCapturing = function patchedStart() {
+    const wasCapturing = capturing;
+    _origStart.apply(this, arguments);
+    if (!wasCapturing && capturing) wave3OnStart();
+  };
+  // eslint-disable-next-line no-func-assign
+  stopCapturing = function patchedStop() {
+    const wasCapturing = capturing;
+    _origStop.apply(this, arguments);
+    if (wasCapturing && !capturing) wave3OnStop();
+  };
 
   // --- Message Listener ---
 

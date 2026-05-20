@@ -616,11 +616,23 @@ async function startRecording(tabId) {
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['field-scanner.js'] });
     await chrome.scripting.executeScript({ target: { tabId }, files: ['overlay.js'] });
+    // Ensure content.js is present in the tab before sending RECORDING_STARTED.
+    // The manifest content_scripts entry only injects on NEW page loads — if the
+    // user reloaded the extension while on the page, the old content.js is gone
+    // and a fresh one isn't there. Without this, the RECORDING_STARTED message
+    // is dropped silently and the overlay never appears until the user refreshes.
+    // The IIFE guard `window.__agentscribe_content_loaded` prevents double-init.
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
   } catch (e) {
     console.warn('[AgentScribe] Helper script injection failed:', e);
   }
 
-  chrome.tabs.sendMessage(tabId, { type: 'RECORDING_STARTED' }).catch(() => {});
+  // Small delay so content.js's onMessage listener has time to register before
+  // we fire RECORDING_STARTED. Without this, on first injection the message
+  // can arrive before the listener is wired and gets dropped.
+  setTimeout(() => {
+    chrome.tabs.sendMessage(tabId, { type: 'RECORDING_STARTED' }).catch(() => {});
+  }, 50);
 
   return { success: true, sessionId: sessionBuffer.id };
 }

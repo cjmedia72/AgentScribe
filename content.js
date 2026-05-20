@@ -10,6 +10,7 @@
   })();
 
   let capturing = false;
+  let paused = false;
   let eventCount = 0;
   let settings = null;
   let fieldMap = new Map();
@@ -319,13 +320,57 @@
           width:8px; height:8px; border-radius:50%; background:#ef4444;
           animation: agentscribe-pulse 1s infinite; flex-shrink:0;
         }
+        #agentscribe-overlay.paused { border-color:#f59e0b !important; }
+        #agentscribe-overlay.paused .rec-dot {
+          background:#f59e0b !important; animation: none !important;
+        }
         #agentscribe-overlay .rec-timer { color:#888; margin-left:4px; }
+        #agentscribe-overlay .agentscribe-btn {
+          pointer-events: auto !important;
+          cursor: pointer !important;
+          background: transparent !important;
+          border: none !important;
+          color: #f8f8f8 !important;
+          font-size: 14px !important;
+          padding: 2px 6px !important;
+          border-radius: 4px !important;
+          user-select: none !important;
+          font-family: monospace !important;
+        }
+        #agentscribe-overlay .agentscribe-btn:hover {
+          background: rgba(255, 255, 255, 0.15) !important;
+        }
       </style>
+      <button type="button" class="agentscribe-btn" id="agentscribe-pause" title="Pause">⏸</button>
+      <button type="button" class="agentscribe-btn" id="agentscribe-stop" title="Stop">⏹</button>
       <span class="rec-dot"></span>
       <span id="agentscribe-counter">REC — 0 events</span>
       <span class="rec-timer" id="agentscribe-timer">0:00</span>
     `;
     (document.body || document.documentElement).appendChild(overlay);
+
+    // Wire pause button
+    const pauseBtn = overlay.querySelector('#agentscribe-pause');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        paused = !paused;
+        applyPausedVisualState();
+      }, true);
+    }
+
+    // Wire stop button
+    const stopBtn = overlay.querySelector('#agentscribe-stop');
+    if (stopBtn) {
+      stopBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          chrome.runtime.sendMessage({ type: 'STOP_RECORDING_FROM_OVERLAY' });
+        } catch (_) { /* SW unreachable; nothing to do */ }
+      }, true);
+    }
 
     // Start the timer
     _overlayStartTime = Date.now();
@@ -357,7 +402,24 @@
       return;
     }
     const el = document.getElementById('agentscribe-counter');
-    if (el) el.textContent = `REC — ${eventCount} events`;
+    if (el) {
+      const label = paused ? 'PAUSED' : 'REC';
+      el.textContent = `${label} — ${eventCount} events`;
+    }
+  }
+
+  function applyPausedVisualState() {
+    const overlay = document.getElementById('agentscribe-overlay');
+    if (overlay) {
+      if (paused) overlay.classList.add('paused');
+      else overlay.classList.remove('paused');
+    }
+    const btn = document.getElementById('agentscribe-pause');
+    if (btn) {
+      btn.textContent = paused ? '▶' : '⏸';
+      btn.title = paused ? 'Resume' : 'Pause';
+    }
+    updateOverlayCount();
   }
 
   // --- Field Hover Tooltip ---
@@ -475,6 +537,7 @@
   function stopCapturing() {
     if (!capturing) return;
     capturing = false;
+    paused = false;
 
     document.removeEventListener('click', handleClick, true);
     document.removeEventListener('input', handleInput, true);
@@ -531,6 +594,7 @@
   }
 
   function sendEvent(event) {
+    if (paused) return;
     eventCount++;
     if (isTopFrame) updateOverlayCount();
     try {

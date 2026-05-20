@@ -862,6 +862,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'STOP_RECORDING_FROM_OVERLAY') {
+    (async () => {
+      const result = await stopRecording();
+      // Surface the popup so user can immediately export. chrome.action.openPopup
+      // is MV3 and may reject if no active window / no user gesture context.
+      // Fallback: open the sessions page in a new tab.
+      try {
+        if (chrome.action && typeof chrome.action.openPopup === 'function') {
+          await chrome.action.openPopup();
+        } else {
+          throw new Error('openPopup unavailable');
+        }
+      } catch (e) {
+        try {
+          await chrome.tabs.create({ url: chrome.runtime.getURL('sessions/sessions.html') });
+        } catch (e2) {
+          console.warn('[AgentScribe] popup + sessions fallback both failed:', e2?.message || e2);
+        }
+      }
+      sendResponse(result);
+    })();
+    return true;
+  }
+
   if (msg.type === 'GET_STATE') {
     (async () => {
       await hydrateOnce();

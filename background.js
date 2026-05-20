@@ -46,6 +46,24 @@ const PENDING_TTL_MS = 60000;
 // finalizeNetworkEvent (prevents the buffer from ever getting huge) AND
 // defensively at finalize-time in _stopRecordingImpl (catches anything that
 // slipped through earlier capture paths, e.g. webRequest fallback).
+//
+// POSTMORTEM 2 (the wave-plan refactor regression — the actual root cause
+// of the 106 MB / 0 sessions report): capping responseBody alone wasn't
+// enough. The Wave 3/6 refactor introduced six new enrichment sinks on
+// sessionBuffer — bundleFindings (with full scriptSources), storageSnapshots
+// (localStorage/sessionStorage maps that grow unbounded on heavy SPAs),
+// fetchEvents (page-context fetch/XHR proxy with raw bodies), wsFrames
+// (WebSocket payloads), wsConnections, cookieSnapshots — and NONE of them
+// had a size cap. On a real session these accumulate faster than networkEvents
+// ever did. chrome.storage.local.set(sessionBuffer) silently fails or hangs
+// past ~80-100 MB, leaving activeSession orphaned and completedSessions empty.
+// The slim layer below (slimSessionForStorage + getSlimSize) caps every
+// enrichment array AT THE WRITE BOUNDARY only — the in-memory sessionBuffer
+// stays rich so exports during the same session keep full fidelity, but
+// every chrome.storage.local.set() now goes through the cap with an 8 MB
+// final ceiling enforced via iterative drop of recoverable fields. Applied
+// in both _stopRecordingImpl (finalize) and maybePersistSession (mid-record
+// persist that was the real bloat source).
 const MAX_RESPONSE_BODY_BYTES = 1024 * 1024; // 1 MB
 
 function truncateResponseBody(event) {
@@ -56,6 +74,240 @@ function truncateResponseBody(event) {
   // If we truncated, the parsed JSON is no longer valid — drop it.
   event.responseBodyParsed = null;
   return event;
+}
+
+// --- v1.0.13 storage-slim layer ---
+//
+// POSTMORTEM 2 (wave-plan refactor regression):
+//   The Wave 3/6 refactor added enrichment fields to sessionBuffer
+//   (bundleFindings, storageSnapshots, fetchEvents, wsFrames, wsConnections,
+//   cookieSnapshots) with NO size caps. On a real session these accumulate
+//   bytes faster than networkEvents ever did — a single SPA can generate
+//   thousands of fetchEvents, dozens of MB of localStorage snapshots,
+//   and bundle findings carrying full scriptSources. The result:
+//   chrome.storage.local.set(sessionBuffer) hangs or silently fails, the
+//   session orphans in activeSession, and the user sees "106 MB used / 0
+//   sessions visible".
+//
+// FIX: a write-boundary slim layer. sessionBuffer in memory keeps the rich
+// data (exports during the same session still get full fidelity). Slimming
+// happens ONLY when we hand bytes to chrome.storage.local — both at finalize
+// (_stopRecordingImpl) and at every mid-recording persist (maybePersistSession).
+// Once slimmed and persisted to completedSessions, the slim version is what
+// future loads see; that's the right tradeoff because the un-slimmed rich
+// data physically can't fit in storage anyway.
+
+const SLIM_MAX_TOTAL_BYTES = 8 * 1024 * 1024; // 8 MB final ceiling
+const SLIM_LOCALSTORAGE_VALUE_MAX = 4 * 1024; // 4 KB per value
+const SLIM_FETCH_BODY_MAX = 100 * 1024;        // 100 KB per fetch body/responseBody
+const SLIM_WS_PAYLOAD_MAX = 50 * 1024;         // 50 KB per WS frame payload
+const SLIM_WS_METADATA_MAX = 100 * 1024;       // 100 KB per WS metadata blob
+
+function _approxByteSize(v) {
+  if (v == null) return 0;
+  if (typeof v === 'string') return v.length;
+  try { return JSON.stringify(v).length; } catch { return 0; }
+}
+
+function _truncateString(s, max, label) {
+  if (typeof s !== 'string') return s;
+  if (s.length <= max) return s;
+  return `[trimmed:${s.length} bytes]`;
+}
+
+function _evenlySpacedSample(arr, cap) {
+  if (!Array.isArray(arr) || arr.length <= cap) return arr ? arr.slice() : [];
+  if (cap <= 2) return [arr[0], arr[arr.length - 1]].slice(0, cap);
+  // Always keep first + last; sample (cap-2) in between at even stride.
+  const out = [arr[0]];
+  const innerCount = cap - 2;
+  const innerStart = 1;
+  const innerEnd = arr.length - 2;
+  const innerSpan = innerEnd - innerStart;
+  for (let i = 0; i < innerCount; i++) {
+    const idx = innerStart + Math.round((i + 1) * innerSpan / (innerCount + 1));
+    out.push(arr[idx]);
+  }
+  out.push(arr[arr.length - 1]);
+  return out;
+}
+
+function _slimBundleFindings(arr) {
+  if (!Array.isArray(arr)) return arr;
+  const kept = arr.slice(-5);
+  return kept.map(entry => {
+    const copy = { ...entry };
+    if (copy.scriptSources) delete copy.scriptSources;
+    if (copy.findings && typeof copy.findings === 'object') {
+      const f = { ...copy.findings };
+      if (Array.isArray(f.discovered_endpoints) && f.discovered_endpoints.length > 200) {
+        f.discovered_endpoints = f.discovered_endpoints.slice(0, 200);
+      }
+      copy.findings = f;
+    }
+    return copy;
+  });
+}
+
+function _slimStorageMap(map) {
+  if (!map || typeof map !== 'object') return map;
+  const out = {};
+  const keys = Object.keys(map).slice(0, 50);
+  for (const k of keys) {
+    const v = map[k];
+    if (typeof v === 'string' && v.length > SLIM_LOCALSTORAGE_VALUE_MAX) {
+      out[k] = `[trimmed:${v.length} bytes]`;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function _slimStorageSnapshots(arr) {
+  if (!Array.isArray(arr)) return arr;
+  const sampled = _evenlySpacedSample(arr, 10);
+  return sampled.map(snap => {
+    const copy = { ...snap };
+    if (copy.localStorage) copy.localStorage = _slimStorageMap(copy.localStorage);
+    if (copy.sessionStorage) copy.sessionStorage = _slimStorageMap(copy.sessionStorage);
+    if (copy.indexedDB && Array.isArray(copy.indexedDB)) {
+      copy.indexedDB = copy.indexedDB.map(db => {
+        const dbCopy = { ...db };
+        if (Array.isArray(dbCopy.sampleKeys) && dbCopy.sampleKeys.length > 20) {
+          dbCopy.sampleKeys = dbCopy.sampleKeys.slice(0, 20);
+        }
+        return dbCopy;
+      });
+    }
+    return copy;
+  });
+}
+
+function _slimFetchEvents(arr) {
+  if (!Array.isArray(arr)) return arr;
+  const kept = arr.slice(-200);
+  return kept.map(ev => {
+    const copy = { ...ev };
+    if (typeof copy.body === 'string' && copy.body.length > SLIM_FETCH_BODY_MAX) {
+      copy.body = `[trimmed:${copy.body.length} bytes]`;
+    }
+    if (typeof copy.responseBody === 'string' && copy.responseBody.length > SLIM_FETCH_BODY_MAX) {
+      copy.responseBody = `[trimmed:${copy.responseBody.length} bytes]`;
+    }
+    return copy;
+  });
+}
+
+function _slimWsFrames(arr) {
+  if (!Array.isArray(arr)) return arr;
+  const kept = arr.slice(-500);
+  return kept.map(fr => {
+    const copy = { ...fr };
+    if (typeof copy.payload === 'string' && copy.payload.length > SLIM_WS_PAYLOAD_MAX) {
+      copy.payload = `[trimmed:${copy.payload.length} bytes]`;
+    }
+    return copy;
+  });
+}
+
+function _slimWsConnections(arr) {
+  if (!Array.isArray(arr)) return arr;
+  return arr.map(conn => {
+    const copy = { ...conn };
+    if (copy.metadata && _approxByteSize(copy.metadata) > SLIM_WS_METADATA_MAX) {
+      copy.metadata = `[trimmed:${_approxByteSize(copy.metadata)} bytes]`;
+    }
+    return copy;
+  });
+}
+
+function _slimCookieSnapshots(arr) {
+  if (!Array.isArray(arr)) return arr;
+  return _evenlySpacedSample(arr, 10);
+}
+
+// Per-field byte report for the storage debug panel.
+function getSlimSize(session) {
+  if (!session || typeof session !== 'object') {
+    return { totalBytes: 0, perFieldBytes: {} };
+  }
+  const perFieldBytes = {};
+  let totalBytes = 0;
+  for (const k of Object.keys(session)) {
+    const bytes = _approxByteSize(session[k]);
+    perFieldBytes[k] = bytes;
+    totalBytes += bytes;
+  }
+  return { totalBytes, perFieldBytes };
+}
+
+// Apply caps + final 8 MB sanity ceiling. Returns a NEW object — caller
+// keeps the original sessionBuffer intact for in-session export use.
+function slimSessionForStorage(session) {
+  if (!session || typeof session !== 'object') return session;
+
+  const originalSize = _approxByteSize(session);
+  const slimmed = { ...session };
+
+  if (Array.isArray(slimmed.bundleFindings)) {
+    slimmed.bundleFindings = _slimBundleFindings(slimmed.bundleFindings);
+  }
+  if (Array.isArray(slimmed.storageSnapshots)) {
+    slimmed.storageSnapshots = _slimStorageSnapshots(slimmed.storageSnapshots);
+  }
+  if (Array.isArray(slimmed.fetchEvents)) {
+    slimmed.fetchEvents = _slimFetchEvents(slimmed.fetchEvents);
+  }
+  if (Array.isArray(slimmed.wsFrames)) {
+    slimmed.wsFrames = _slimWsFrames(slimmed.wsFrames);
+  }
+  if (Array.isArray(slimmed.wsConnections)) {
+    slimmed.wsConnections = _slimWsConnections(slimmed.wsConnections);
+  }
+  if (Array.isArray(slimmed.cookieSnapshots)) {
+    slimmed.cookieSnapshots = _slimCookieSnapshots(slimmed.cookieSnapshots);
+  }
+  // networkEvents already capped per-body by truncateResponseBody (1 MB).
+  // events (DOM) typically light — no cap.
+
+  // Final sanity check: serialize and, if still over the ceiling, iteratively
+  // drop the heaviest enrichment arrays. Order is recoverable-first
+  // (cookieSnapshots → wsConnections → bundleFindings → storageSnapshots →
+  // fetchEvents → wsFrames). networkEvents and events are NEVER dropped here —
+  // those are the core capture data.
+  let finalSize = _approxByteSize(slimmed);
+  const droppedFields = [];
+  if (finalSize > SLIM_MAX_TOTAL_BYTES) {
+    const dropOrder = [
+      'cookieSnapshots',
+      'wsConnections',
+      'bundleFindings',
+      'storageSnapshots',
+      'fetchEvents',
+      'wsFrames'
+    ];
+    // Score by current byte size, drop heaviest first within the recoverable list.
+    const sizes = dropOrder
+      .filter(f => slimmed[f] != null)
+      .map(f => ({ field: f, bytes: _approxByteSize(slimmed[f]) }))
+      .sort((a, b) => b.bytes - a.bytes);
+    for (const { field, bytes } of sizes) {
+      if (finalSize <= SLIM_MAX_TOTAL_BYTES) break;
+      console.warn(`[AgentScribe] slim: dropping ${field} (${bytes} bytes) to meet 8 MB ceiling`);
+      droppedFields.push({ field, bytes });
+      slimmed[field] = [];
+      finalSize = _approxByteSize(slimmed);
+    }
+  }
+
+  if (finalSize !== originalSize) {
+    slimmed._storageCapped = true;
+    slimmed._storageOriginalSize = originalSize;
+    if (droppedFields.length) slimmed._storageDroppedFields = droppedFields;
+  }
+
+  return slimmed;
 }
 
 // --- Hydration: restore state from chrome.storage.local on SW wake ---
@@ -764,33 +1016,59 @@ async function _stopRecordingImpl() {
     sessionBuffer.authProfile = null;
   }
 
+  // v1.0.13 storage-slim: capture pre-slim sizes for diagnostics, then slim
+  // BEFORE handing bytes to chrome.storage.local. sessionBuffer in memory
+  // remains rich; only the persisted copy is slimmed.
+  const preSlimSize = getSlimSize(sessionBuffer);
+  const slimmedForStorage = slimSessionForStorage(sessionBuffer);
+  const postSlimSize = _approxByteSize(slimmedForStorage);
+
   const stored = await chrome.storage.local.get('completedSessions');
   const completed = stored.completedSessions || [];
-  completed.unshift(sessionBuffer);
+  completed.unshift(slimmedForStorage);
   if (completed.length > 20) completed.length = 20;
 
   // v1.0.13 hotfix: wrap the finalize write. If this throws (quota exceeded
   // on a huge session, SW eviction mid-write, etc.), surface the error
   // instead of silently dropping the session into the activeSession orphan
   // state that produced the 106 MB / 0 sessions bug.
+  let persistDebug = {
+    size: postSlimSize,
+    slimmed: slimmedForStorage._storageCapped === true,
+    originalSize: preSlimSize.totalBytes,
+    droppedFields: slimmedForStorage._storageDroppedFields || []
+  };
   try {
     await chrome.storage.local.set({
       completedSessions: completed,
-      lastSession: sessionBuffer,
+      lastSession: slimmedForStorage,
       activeSession: null,
       isRecording: false,
       activeTabId: null,
       trackedTabIds: []
     });
+    console.log(`[AgentScribe] Finalize write OK — ${postSlimSize} bytes (slimmed from ${preSlimSize.totalBytes})`);
   } catch (e) {
+    // Identify the heaviest fields BEFORE slim — actionable info for postmortem.
+    const heaviest = Object.entries(preSlimSize.perFieldBytes)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([k, v]) => `${k}=${v}`);
     console.error('[AgentScribe] FINALIZE WRITE FAILED:', e?.message || e);
+    console.error('[AgentScribe] Pre-slim heaviest fields:', heaviest.join(', '));
+    console.error('[AgentScribe] Post-slim size:', postSlimSize);
     // Try a fallback: clear activeSession alone so the session at least
     // becomes recoverable from the (already-written) completedSessions if
     // that write happened to succeed before the throw.
     try {
       await chrome.storage.local.set({ isRecording: false, activeTabId: null, trackedTabIds: [] });
     } catch {}
-    return { success: false, error: e?.message || String(e), reason: 'finalize_write_failed' };
+    return {
+      success: false,
+      error: e?.message || String(e),
+      reason: 'finalize_write_failed',
+      persistDebug: { ...persistDebug, heaviest }
+    };
   }
 
   const sessionResult = {
@@ -800,7 +1078,8 @@ async function _stopRecordingImpl() {
     domEventCount: sessionBuffer.events.length,
     networkEventCount: sessionBuffer.networkEvents.length,
     fieldCount: sessionBuffer.injectableFields.length,
-    droppedEvents: sessionBuffer.droppedEvents || 0
+    droppedEvents: sessionBuffer.droppedEvents || 0,
+    persistDebug
   };
 
   trackedTabIds = new Set();
@@ -857,7 +1136,16 @@ async function maybePersistSession({ force = false } = {}) {
   _lastStorageWrite = now;
   _lastWriteEventCount = sessionBuffer.events.length;
   _lastWriteNetCount = sessionBuffer.networkEvents.length;
-  await chrome.storage.local.set({ activeSession: sessionBuffer });
+
+  // v1.0.13 storage-slim: never persist the raw rich buffer mid-recording.
+  // The wave-plan refactor's enrichment arrays bloat activeSession into
+  // the 100 MB range that orphans on stop. Slim AT the write boundary.
+  const slimmedActive = slimSessionForStorage(sessionBuffer);
+  try {
+    await chrome.storage.local.set({ activeSession: slimmedActive });
+  } catch (e) {
+    console.error('[AgentScribe] maybePersistSession write failed:', e?.message || e);
+  }
 }
 
 async function autoExportSegment() {
@@ -1061,6 +1349,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.storage.local.remove(['completedSessions', 'lastSession']).then(() => {
       sendResponse({ success: true });
     });
+    return true;
+  }
+
+  // v1.0.13 storage-slim: live size report for the storage debug panel.
+  // Returns per-field byte sizes of the in-memory sessionBuffer so the
+  // user can see WHY a session is bloating mid-recording.
+  if (msg.type === 'STORAGE_DEBUG') {
+    (async () => {
+      await hydrateOnce();
+      if (!sessionBuffer) {
+        sendResponse({ active: false, totalBytes: 0, perFieldBytes: {} });
+        return;
+      }
+      const sizes = getSlimSize(sessionBuffer);
+      const slimmedPreview = slimSessionForStorage(sessionBuffer);
+      sendResponse({
+        active: true,
+        sessionId: sessionBuffer.id,
+        ...sizes,
+        slimPreview: {
+          totalBytes: _approxByteSize(slimmedPreview),
+          slimmed: slimmedPreview._storageCapped === true,
+          droppedFields: slimmedPreview._storageDroppedFields || []
+        }
+      });
+    })();
     return true;
   }
 

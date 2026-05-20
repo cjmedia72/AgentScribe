@@ -406,9 +406,13 @@
     capturing = true;
     eventCount = 0;
 
-    chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (s) => {
-      settings = s || {};
-    });
+    // Attach DOM event listeners FIRST — before anything that could throw.
+    // This guarantees capture is live even if downstream init fails.
+    try {
+      chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (s) => {
+        settings = s || {};
+      });
+    } catch (e) { /* runtime unreachable; settings stays null, handlers still fire */ }
 
     document.addEventListener('click', handleClick, true);
     document.addEventListener('input', handleInput, true);
@@ -421,38 +425,47 @@
     document.addEventListener('mouseover', handleMouseOver, true);
     document.addEventListener('mouseout', handleMouseOut, true);
 
+    // Wave 3 lifecycle hook — wrapped so any failure here cannot prevent
+    // the DOM listeners (already attached above) from operating, nor block
+    // the rest of this function (overlay, field scan, mutation observer).
+    try { wave3OnStart(); } catch (e) { /* swallow */ }
+
     // Show inline overlay immediately — top frame only (iframes shouldn't paint UI).
     setTimeout(scanFields, 200);
 
     if (isTopFrame) {
-      createOverlay();
+      try { createOverlay(); } catch (e) { /* overlay must never block capture */ }
 
-      waitForHelpers(600).then((found) => {
-        if (!capturing) return;
-        if (found && window.__agentscribe?.createOverlay) {
-          const inline = document.getElementById('agentscribe-overlay');
-          if (inline) inline.remove();
-          window.__agentscribe.createOverlay();
-          if (typeof window.__agentscribe.updateOverlayCount === 'function') {
-            window.__agentscribe.updateOverlayCount(eventCount);
+      try {
+        waitForHelpers(600).then((found) => {
+          if (!capturing) return;
+          if (found && window.__agentscribe?.createOverlay) {
+            const inline = document.getElementById('agentscribe-overlay');
+            if (inline) inline.remove();
+            window.__agentscribe.createOverlay();
+            if (typeof window.__agentscribe.updateOverlayCount === 'function') {
+              window.__agentscribe.updateOverlayCount(eventCount);
+            }
           }
-        }
-      });
+        });
+      } catch (e) { /* swallow */ }
     }
 
-    mutationObserver = new MutationObserver((mutations) => {
-      let hasNewNodes = false;
-      for (const m of mutations) {
-        if (m.addedNodes.length > 0) { hasNewNodes = true; break; }
-      }
-      if (hasNewNodes) {
-        clearTimeout(mutationObserver._debounce);
-        mutationObserver._debounce = setTimeout(scanFields, 500);
-      }
-    });
-    mutationObserver.observe(document.body || document.documentElement, {
-      childList: true, subtree: true
-    });
+    try {
+      mutationObserver = new MutationObserver((mutations) => {
+        let hasNewNodes = false;
+        for (const m of mutations) {
+          if (m.addedNodes.length > 0) { hasNewNodes = true; break; }
+        }
+        if (hasNewNodes) {
+          clearTimeout(mutationObserver._debounce);
+          mutationObserver._debounce = setTimeout(scanFields, 500);
+        }
+      });
+      mutationObserver.observe(document.body || document.documentElement, {
+        childList: true, subtree: true
+      });
+    } catch (e) { /* MutationObserver is best-effort; capture is already live */ }
   }
 
   function stopCapturing() {
@@ -471,11 +484,17 @@
     document.removeEventListener('mouseout', handleMouseOut, true);
 
     if (mutationObserver) {
-      mutationObserver.disconnect();
+      try { mutationObserver.disconnect(); } catch (e) {}
       mutationObserver = null;
     }
 
-    if (isTopFrame) removeOverlay();
+    // Wave 3 lifecycle hook — wrapped so a failure here cannot leave
+    // listeners attached or skip overlay teardown.
+    try { wave3OnStop(); } catch (e) { /* swallow */ }
+
+    if (isTopFrame) {
+      try { removeOverlay(); } catch (e) {}
+    }
   }
 
   // Poll for helper scripts. Aborts if recording stops mid-poll.
@@ -773,21 +792,14 @@
     _bundleAnalyzedThisPage = false;
   }
 
-  // Patch startCapturing/stopCapturing to fire the Wave 3 lifecycle hooks.
-  const _origStart = startCapturing;
-  const _origStop = stopCapturing;
-  // eslint-disable-next-line no-func-assign
-  startCapturing = function patchedStart() {
-    const wasCapturing = capturing;
-    _origStart.apply(this, arguments);
-    if (!wasCapturing && capturing) wave3OnStart();
-  };
-  // eslint-disable-next-line no-func-assign
-  stopCapturing = function patchedStop() {
-    const wasCapturing = capturing;
-    _origStop.apply(this, arguments);
-    if (wasCapturing && !capturing) wave3OnStop();
-  };
+  // Wave 3 lifecycle hooks (wave3OnStart / wave3OnStop) are invoked directly
+  // inside startCapturing() / stopCapturing() above, wrapped in try/catch so
+  // a hook failure can never block DOM event listener attachment.
+  //
+  // The previous wrap-and-reassign pattern (replacing the function bindings
+  // post-declaration) was removed in v1.0.13 hotfix — it was structurally
+  // fragile and any silent failure in a hook could appear as "0 DOM events"
+  // even though the listeners themselves were fine.
 
   // --- Message Listener ---
 

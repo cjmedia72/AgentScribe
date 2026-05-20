@@ -292,11 +292,11 @@
 
   // --- Overlay ---
 
+  // Inline overlay — self-contained, no dependency on dynamically-injected
+  // overlay.js. Includes the elapsed timer baked in. Paints immediately.
+  let _overlayStartTime = 0;
+  let _overlayTimerInterval = null;
   function createOverlay() {
-    if (window.__agentscribe?.createOverlay) {
-      window.__agentscribe.createOverlay();
-      return;
-    }
     if (document.getElementById('agentscribe-overlay')) return;
 
     const overlay = document.createElement('div');
@@ -313,26 +313,42 @@
           z-index: 2147483647 !important; pointer-events: none !important;
           display: flex !important; align-items: center !important; gap: 8px !important;
           box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important;
+          user-select: none !important;
         }
         #agentscribe-overlay .rec-dot {
           width:8px; height:8px; border-radius:50%; background:#ef4444;
-          animation: agentscribe-pulse 1s infinite;
+          animation: agentscribe-pulse 1s infinite; flex-shrink:0;
         }
+        #agentscribe-overlay .rec-timer { color:#888; margin-left:4px; }
       </style>
       <span class="rec-dot"></span>
       <span id="agentscribe-counter">REC — 0 events</span>
+      <span class="rec-timer" id="agentscribe-timer">0:00</span>
     `;
-    document.documentElement.appendChild(overlay);
+    (document.body || document.documentElement).appendChild(overlay);
+
+    // Start the timer
+    _overlayStartTime = Date.now();
+    if (_overlayTimerInterval) clearInterval(_overlayTimerInterval);
+    _overlayTimerInterval = setInterval(() => {
+      const el = document.getElementById('agentscribe-timer');
+      if (!el) return;
+      const elapsed = Math.floor((Date.now() - _overlayStartTime) / 1000);
+      const m = Math.floor(elapsed / 60);
+      const s = String(elapsed % 60).padStart(2, '0');
+      el.textContent = `${m}:${s}`;
+    }, 1000);
   }
 
   function removeOverlay() {
-    if (window.__agentscribe?.removeOverlay) {
-      window.__agentscribe.removeOverlay();
-    }
     const overlay = document.getElementById('agentscribe-overlay');
     if (overlay) overlay.remove();
     const tooltip = document.getElementById('agentscribe-tooltip');
     if (tooltip) tooltip.remove();
+    if (_overlayTimerInterval) {
+      clearInterval(_overlayTimerInterval);
+      _overlayTimerInterval = null;
+    }
   }
 
   function updateOverlayCount() {
@@ -425,31 +441,19 @@
     document.addEventListener('mouseover', handleMouseOver, true);
     document.addEventListener('mouseout', handleMouseOut, true);
 
-    // Wave 3 lifecycle hook — wrapped so any failure here cannot prevent
-    // the DOM listeners (already attached above) from operating, nor block
-    // the rest of this function (overlay, field scan, mutation observer).
-    try { wave3OnStart(); } catch (e) { /* swallow */ }
-
-    // Show inline overlay immediately — top frame only (iframes shouldn't paint UI).
-    setTimeout(scanFields, 200);
-
+    // Overlay paints FIRST — before any wave3 init — so user sees the REC
+    // indicator instantly. The inline overlay is fully self-contained (timer
+    // baked in); no dependency on dynamically-injected overlay.js.
     if (isTopFrame) {
       try { createOverlay(); } catch (e) { /* overlay must never block capture */ }
-
-      try {
-        waitForHelpers(600).then((found) => {
-          if (!capturing) return;
-          if (found && window.__agentscribe?.createOverlay) {
-            const inline = document.getElementById('agentscribe-overlay');
-            if (inline) inline.remove();
-            window.__agentscribe.createOverlay();
-            if (typeof window.__agentscribe.updateOverlayCount === 'function') {
-              window.__agentscribe.updateOverlayCount(eventCount);
-            }
-          }
-        });
-      } catch (e) { /* swallow */ }
     }
+
+    // Wave 3 lifecycle hook — runs after overlay so its async init can't
+    // delay the visual indicator. Wrapped so any failure here cannot prevent
+    // the DOM listeners (already attached above) from operating.
+    try { wave3OnStart(); } catch (e) { /* swallow */ }
+
+    setTimeout(scanFields, 200);
 
     try {
       mutationObserver = new MutationObserver((mutations) => {

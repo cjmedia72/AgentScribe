@@ -23,6 +23,30 @@ async function init() {
 
   await renderSessions();
   await updateStorageUsage();
+
+  // v1.0.13 audit fix: storage.onChanged listener closes the stop-popup race.
+  //
+  // STOP_RECORDING_FROM_OVERLAY opens this page BEFORE stopRecording() finishes
+  // writing the new session to chrome.storage.local (the popup-fallback timer
+  // fires at 300ms while the write can take 1-60s on heavy sessions). Without
+  // this listener, the freshly-stopped session never appears until the user
+  // hits refresh — manifesting as "no data showing" right after they stop.
+  //
+  // Re-render on any change to completedSessions; debounce to coalesce the
+  // typical write-burst (multi-second sessions can trigger several writes in
+  // quick succession during finalization).
+  let _refreshTimer = null;
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (!changes.completedSessions) return;
+    clearTimeout(_refreshTimer);
+    _refreshTimer = setTimeout(() => {
+      renderSessions().then(() => {
+        applySearchFilter();
+        updateStorageUsage();
+      }).catch(e => console.error('[AgentScribe] auto-refresh failed:', e));
+    }, 150);
+  });
 }
 
 async function renderSessions() {

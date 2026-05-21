@@ -1496,6 +1496,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // v1.0.14: re-slim all completedSessions in storage through the current
+  // slimSessionForStorage rules. Sessions captured before the storage-slim
+  // wave can be 50+ MB each; this button compacts them in-place. Background
+  // reads its own storage — no IPC payload cap. Response is small ({success,
+  // before, after, sessionCount}) so the return trip is safe too.
+  if (msg.type === 'MIGRATE_COMPLETED_SESSIONS') {
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get('completedSessions');
+        const sessions = stored.completedSessions || [];
+        if (sessions.length === 0) {
+          sendResponse({ success: true, before: 0, after: 0, sessionCount: 0 });
+          return;
+        }
+        const before = _approxByteSize(sessions);
+        const slimmed = sessions.map(s => {
+          try {
+            return slimSessionForStorage(s);
+          } catch (e) {
+            console.warn('[AgentScribe] MIGRATE: slim failed for session', s?.id, e?.message || e);
+            return s;
+          }
+        });
+        const after = _approxByteSize(slimmed);
+        await chrome.storage.local.set({ completedSessions: slimmed });
+        sendResponse({ success: true, before, after, sessionCount: slimmed.length });
+      } catch (e) {
+        console.error('[AgentScribe] MIGRATE_COMPLETED_SESSIONS failed:', e);
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === 'DELETE_SESSION') {
     (async () => {
       const stored = await chrome.storage.local.get(['completedSessions', 'lastSession']);

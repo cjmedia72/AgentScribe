@@ -51,7 +51,34 @@ async function init() {
 }
 
 async function renderSessions() {
-  const sessions = await sendMessage({ type: 'GET_COMPLETED_SESSIONS' }) || [];
+  // v1.0.14 hotfix: chrome.runtime.sendMessage has a ~64 MB payload cap.
+  // When completedSessions exceeds that (100+ MB observed in the wild), the
+  // background-SW round-trip silently drops the response and the page shows
+  // 0 sessions despite the data being intact in storage. As an extension
+  // page we have direct chrome.storage.local access — bypass the IPC.
+  sessionList.innerHTML = `
+    <div class="empty-state">
+      <div class="icon">&#9203;</div>
+      <div class="title">Loading sessions…</div>
+      <div class="hint">Reading from chrome.storage.local. Large stores (>50 MB) can take a few seconds.</div>
+    </div>
+  `;
+
+  let sessions = [];
+  try {
+    const stored = await chrome.storage.local.get('completedSessions');
+    sessions = stored.completedSessions || [];
+  } catch (e) {
+    console.error('[AgentScribe] renderSessions: storage read failed:', e);
+    sessionList.innerHTML = `
+      <div class="empty-state">
+        <div class="icon">&#9888;</div>
+        <div class="title">Failed to load sessions</div>
+        <div class="hint">${escapeHtml(e?.message || String(e))}</div>
+      </div>
+    `;
+    return;
+  }
 
   totalSessions.textContent = sessions.length;
   totalEvents.textContent = sessions.reduce((sum, s) => sum + (s.events?.length || 0), 0).toLocaleString();
@@ -277,14 +304,31 @@ function triggerDownload(content, filename, mimeType) {
 
 async function deleteSession(sessionId) {
   if (!confirm('Delete this session permanently? This cannot be undone.')) return;
-  await sendMessage({ type: 'DELETE_SESSION', sessionId });
+  // v1.0.14: direct storage write — avoid IPC cap on response containing
+  // the full sessions array.
+  try {
+    const stored = await chrome.storage.local.get(['completedSessions', 'lastSession']);
+    const completed = (stored.completedSessions || []).filter(s => s.id !== sessionId);
+    const updates = { completedSessions: completed };
+    if (stored.lastSession?.id === sessionId) {
+      updates.lastSession = completed[0] || null;
+    }
+    await chrome.storage.local.set(updates);
+  } catch (e) {
+    console.error('[AgentScribe] deleteSession failed:', e);
+  }
   await renderSessions();
   await updateStorageUsage();
 }
 
 clearAllBtn.addEventListener('click', async () => {
   if (!confirm('Delete ALL saved sessions? This cannot be undone.')) return;
-  await sendMessage({ type: 'CLEAR_SESSIONS' });
+  // v1.0.14: direct storage write.
+  try {
+    await chrome.storage.local.remove(['completedSessions', 'lastSession']);
+  } catch (e) {
+    console.error('[AgentScribe] clearAll failed:', e);
+  }
   await renderSessions();
   await updateStorageUsage();
 });
@@ -502,6 +546,7 @@ const debugRefreshBtn = document.getElementById('debugRefreshBtn');
 const debugListKeysBtn = document.getElementById('debugListKeysBtn');
 const debugRecoverBtn = document.getElementById('debugRecoverBtn');
 const debugClearActiveBtn = document.getElementById('debugClearActiveBtn');
+const debugMigrateBtn = document.getElementById('debugMigrateBtn');
 const debugMsg = document.getElementById('debugMsg');
 const debugKeysList = document.getElementById('debugKeysList');
 
@@ -513,6 +558,7 @@ debugRefreshBtn?.addEventListener('click', () => refreshDebugPanel());
 debugListKeysBtn?.addEventListener('click', () => listAllStorageKeys());
 debugRecoverBtn?.addEventListener('click', () => recoverActiveSession());
 debugClearActiveBtn?.addEventListener('click', () => clearActiveSession());
+debugMigrateBtn?.addEventListener('click', () => migrateCompletedSessions());
 
 function fmtBytes(n) {
   if (n == null || isNaN(n)) return '—';
@@ -671,6 +717,40 @@ async function clearActiveSession() {
     showDebugMsg(`Clear failed: ${e.message || e}`, true);
   } finally {
     debugClearActiveBtn.disabled = false;
+  }
+}
+
+// v1.0.14: migrate existing completedSessions through slimSessionForStorage.
+// Pre-slim sessions (before the storage-slim wave) can be 50+ MB each. This
+// button reslims them in-place via the background SW (which owns the slim
+// function). Background reads its own storage — no IPC payload cap.
+async function migrateCompletedSessions() {
+  if (!confirm('Re-slim all completed sessions in storage? This compacts oversized fields (large response bodies, raw event data) using the current storage-slim rules. Safe — only trims fields that exceed caps.')) return;
+  debugMigrateBtn.disabled = true;
+  const originalText = debugMigrateBtn.textContent;
+  debugMigrateBtn.textContent = 'Migrating…';
+  try {
+    const result = await sendMessage({ type: 'MIGRATE_COMPLETED_SESSIONS' });
+    if (result?.success) {
+      const beforeMB = (result.before / 1048576).toFixed(2);
+      const afterMB = (result.after / 1048576).toFixed(2);
+      const savedMB = ((result.before - result.after) / 1048576).toFixed(2);
+      showDebugMsg(
+        `Migrated ${result.sessionCount} session(s): ${beforeMB} MB → ${afterMB} MB (saved ${savedMB} MB)`,
+        false
+      );
+      await renderSessions();
+      await updateStorageUsage();
+      await refreshDebugPanel();
+    } else {
+      showDebugMsg(`Migration failed: ${result?.reason || result?.error || 'unknown'}`, true);
+    }
+  } catch (e) {
+    console.error('[AgentScribe] migrateCompletedSessions failed:', e);
+    showDebugMsg(`Migration error: ${e.message || e}`, true);
+  } finally {
+    debugMigrateBtn.disabled = false;
+    debugMigrateBtn.textContent = originalText;
   }
 }
 

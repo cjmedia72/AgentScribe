@@ -631,17 +631,26 @@ async function refreshDebugPanel() {
       ].join('');
       debugRecoverBtn.style.display = hasData ? 'inline-block' : 'none';
       debugClearActiveBtn.style.display = 'inline-block';
-      // Auto-expand panel if there's an orphaned session with data.
-      if (hasData && !debugPanel.classList.contains('expanded')) {
+      // Auto-show + auto-expand panel ONLY if there's an orphaned activeSession
+      // with real data — that's the actual anomaly worth surfacing.
+      if (hasData) {
+        debugPanel.style.display = 'block';
         debugPanel.classList.add('expanded');
+      } else {
+        debugPanel.style.display = 'none';
       }
     } else {
       debugActiveSection.style.display = 'none';
       debugRecoverBtn.style.display = 'none';
       debugClearActiveBtn.style.display = 'none';
+      // No orphan → keep debug panel hidden by default.
+      debugPanel.style.display = 'none';
     }
   } catch (e) {
     console.error('[AgentScribe] debug panel refresh failed:', e);
+    // Read failure IS an anomaly — surface the panel so user can act.
+    debugPanel.style.display = 'block';
+    debugPanel.classList.add('expanded');
     showDebugMsg(`Refresh failed: ${e.message || e}`, true);
   }
 }

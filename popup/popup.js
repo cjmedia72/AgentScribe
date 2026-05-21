@@ -69,6 +69,23 @@ async function init() {
     }
     showState('idle');
   }
+
+  // Stop-from-overlay race: popup opens at 300ms but stopRecording's write
+  // of `lastSession` to storage can take 10-15s on heavy sessions. Without
+  // this listener, the popup shows no last-session info until the user
+  // manually closes + reopens. Watch for lastSession landing in storage
+  // and refresh the idle-state UI immediately when it does.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (!changes.lastSession) return;
+    const next = changes.lastSession.newValue;
+    if (!next) return;
+    cachedLastSession = next;
+    // Only update if currently showing idle — recording state has its own poller.
+    if (stateIdle.style.display !== 'none') {
+      showLastSession(next);
+    }
+  });
 }
 
 // Pre-cache lastSession in the background so it's available the moment the

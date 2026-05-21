@@ -237,6 +237,32 @@
 
     .session-note-input::placeholder { color: #555; }
 
+    /* v1.0.13 additive: outcome pill */
+    .outcome-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      border: 1px solid transparent;
+      transition: filter 0.15s;
+    }
+    .outcome-pill:hover { filter: brightness(1.15); }
+    .outcome-pill.success { background: #14532d; color: #86efac; }
+    .outcome-pill.failed  { background: #4c1212; color: #fca5a5; }
+    .outcome-pill.partial { background: #422006; color: #fcd34d; }
+    .outcome-pill.unknown,
+    .outcome-pill.uncertain { background: #1f2937; color: #9ca3af; }
+    .outcome-pill.user-set { border-color: #3b82f6; }
+    .outcome-pill .pill-dot {
+      width: 4px; height: 4px; border-radius: 50%;
+      background: #3b82f6; display: inline-block;
+    }
+
     .session-actions {
       display: flex;
       align-items: center;

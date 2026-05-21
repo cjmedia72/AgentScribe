@@ -302,6 +302,10 @@ function buildMeta(session, variant) {
       ws_connections: Array.isArray(session.wsConnections) ? session.wsConnections.length : 0,
       ws_frames: Array.isArray(session.wsFrames) ? session.wsFrames.length : 0
     },
+    // v1.0.13 additive: outcome (heuristic + user override)
+    outcome: session.outcome || 'uncertain',
+    outcome_confidence: typeof session.outcomeConfidence === 'number' ? session.outcomeConfidence : null,
+    outcome_user_set: !!session.outcomeUserSet,
     instructions_for_agent: variant === 'lean' ? [
       'Lean bundle for direct paste into an agent — optimized for context-window efficiency.',
       'Use `mcp.api_map` to call the recorded APIs directly (this is the highest-leverage data).',

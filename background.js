@@ -1,4 +1,4 @@
-import { correlate, inferPagination, tagMutation } from './correlation-engine.js';
+import { correlate, inferPagination, tagMutation, inferOutcome } from './correlation-engine.js';
 import { inferSessionName, inferStartName } from './session-namer.js';
 import { classifyRequest, classifyHeader } from './auth-detector.js';
 
@@ -1014,6 +1014,22 @@ async function _stopRecordingImpl() {
   } catch (e) {
     console.warn('[AgentScribe] aggregateAuthProfile failed:', e?.message || e);
     sessionBuffer.authProfile = null;
+  }
+
+  // v1.0.13 additive: outcome heuristic. Pure function, wrapped — must not
+  // break finalize. User can override via the session card pill.
+  try {
+    const oc = inferOutcome(sessionBuffer);
+    sessionBuffer.outcome = oc.outcome;
+    sessionBuffer.outcomeConfidence = oc.confidence;
+    sessionBuffer.outcomeSignals = oc.signals;
+    sessionBuffer.outcomeUserSet = false;
+  } catch (e) {
+    console.warn('[AgentScribe] inferOutcome failed:', e?.message || e);
+    sessionBuffer.outcome = 'uncertain';
+    sessionBuffer.outcomeConfidence = 0.5;
+    sessionBuffer.outcomeSignals = [];
+    sessionBuffer.outcomeUserSet = false;
   }
 
   // v1.0.13 storage-slim: capture pre-slim sizes for diagnostics, then slim

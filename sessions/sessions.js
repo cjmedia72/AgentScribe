@@ -124,6 +124,7 @@ function buildCard(session) {
           <span class="meta-item">&#127760; <strong>${netCount}</strong> API</span>
           <span class="meta-item">&#9998; <strong>${fieldCount}</strong> fields</span>
           ${droppedCount > 0 ? `<span class="meta-item" style="color:#f87171">&#9888; ${droppedCount} dropped</span>` : ''}
+          ${renderOutcomePill(session)}
         </div>
         <div class="session-url">${escapeHtml(session.startUrl || '')}</div>
         <input type="text" class="session-note-input" placeholder="Add a note (saved automatically)..." value="${escapeHtml(session.note || '')}" maxlength="200" />
@@ -191,7 +192,100 @@ function buildCard(session) {
 
   card.querySelector('.delete-btn').addEventListener('click', () => deleteSession(session.id));
 
+  // v1.0.13 additive: outcome-pill cycle + override
+  const pill = card.querySelector('.outcome-pill');
+  if (pill) {
+    pill.addEventListener('click', () => cycleOutcome(session, pill));
+  }
+
   return card;
+}
+
+// v1.0.13 additive: outcome pill rendering + cycle
+const OUTCOME_CYCLE = ['success', 'failed', 'partial', 'unknown'];
+const OUTCOME_LABEL = {
+  success:   { glyph: '&#10003;', text: 'Success' },
+  failed:    { glyph: '&#10005;', text: 'Failed' },
+  partial:   { glyph: '&#9676;',  text: 'Partial' },
+  unknown:   { glyph: '?',        text: 'Unknown' },
+  uncertain: { glyph: '?',        text: 'Uncertain' }
+};
+
+function renderOutcomePill(session) {
+  try {
+    const outcome = session.outcome || 'uncertain';
+    const cls = OUTCOME_LABEL[outcome] ? outcome : 'uncertain';
+    const label = OUTCOME_LABEL[cls];
+    const userSet = !!session.outcomeUserSet;
+    const conf = typeof session.outcomeConfidence === 'number'
+      ? ` (${Math.round(session.outcomeConfidence * 100)}%)` : '';
+    const title = userSet
+      ? `Outcome (manually set) — click to cycle`
+      : `Outcome (auto-detected${conf}) — click to cycle`;
+    return `<span class="meta-item"><span class="outcome-pill ${cls}${userSet ? ' user-set' : ''}" title="${escapeHtml(title)}">${label.glyph} ${label.text}${userSet ? '<span class="pill-dot"></span>' : ''}</span></span>`;
+  } catch (_e) {
+    return '';
+  }
+}
+
+async function cycleOutcome(session, pillEl) {
+  try {
+    const current = session.outcome || 'uncertain';
+    let next;
+    if (session.outcomeUserSet) {
+      const idx = OUTCOME_CYCLE.indexOf(current);
+      if (idx === OUTCOME_CYCLE.length - 1) {
+        // After 'unknown' -> back to original heuristic
+        next = null; // signal: revert
+      } else {
+        next = OUTCOME_CYCLE[(idx + 1) % OUTCOME_CYCLE.length];
+      }
+    } else {
+      // First click: start the cycle from Success.
+      next = 'success';
+    }
+
+    const stored = await chrome.storage.local.get('completedSessions');
+    const sessions = stored.completedSessions || [];
+    const idx = sessions.findIndex(s => s.id === session.id);
+    if (idx < 0) return;
+
+    if (next === null) {
+      // Revert to original heuristic outcome
+      const original = sessions[idx]._outcomeHeuristic || sessions[idx].outcome;
+      sessions[idx].outcome = original || 'uncertain';
+      sessions[idx].outcomeUserSet = false;
+      session.outcome = sessions[idx].outcome;
+      session.outcomeUserSet = false;
+    } else {
+      // Preserve original heuristic on first override
+      if (!sessions[idx].outcomeUserSet && !sessions[idx]._outcomeHeuristic) {
+        sessions[idx]._outcomeHeuristic = sessions[idx].outcome || 'uncertain';
+      }
+      sessions[idx].outcome = next;
+      sessions[idx].outcomeUserSet = true;
+      session.outcome = next;
+      session.outcomeUserSet = true;
+    }
+
+    await chrome.storage.local.set({ completedSessions: sessions });
+
+    // Re-render just this pill in place
+    const fresh = renderOutcomePill(session);
+    const wrapper = pillEl.closest('.meta-item');
+    if (wrapper) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = fresh;
+      const newWrap = tmp.firstElementChild;
+      if (newWrap) {
+        wrapper.replaceWith(newWrap);
+        const newPill = newWrap.querySelector('.outcome-pill');
+        if (newPill) newPill.addEventListener('click', () => cycleOutcome(session, newPill));
+      }
+    }
+  } catch (e) {
+    console.error('[AgentScribe] cycleOutcome failed:', e);
+  }
 }
 
 async function exportSession(sessionId, format, card) {

@@ -377,3 +377,138 @@ export function tagMutation(networkEvent) {
 
   return true;
 }
+
+// -----------------------------------------------------------------------------
+// Outcome heuristic (v1.0.13 additive)
+// -----------------------------------------------------------------------------
+//
+// Pure function. Returns { outcome, confidence, signals }.
+//   outcome:    'success' | 'failed' | 'uncertain'
+//   confidence: 0..1
+//   signals:    [{ rule, delta, detail }]  -- the rules that fired
+//
+// Scoring is signal-additive (max ~100, can go negative). Interpretation:
+//   score >= 60 -> success,   confidence = score / 100
+//   score <= 20 -> failed,    confidence = (40 - score) / 40 (clamped 0..1)
+//   otherwise   -> uncertain, confidence = 0.5
+//
+// All input access is defensive — the heuristic must never throw on a
+// malformed session.
+export function inferOutcome(session) {
+  const signals = [];
+  let score = 0;
+
+  const push = (rule, delta, detail) => {
+    score += delta;
+    signals.push({ rule, delta, detail: detail || null });
+  };
+
+  try {
+    if (!session || typeof session !== 'object') {
+      return { outcome: 'uncertain', confidence: 0.5, signals: [] };
+    }
+
+    const net = Array.isArray(session.networkEvents) ? session.networkEvents : [];
+    const dom = Array.isArray(session.events) ? session.events : [];
+    const endTime = typeof session.endTime === 'number' ? session.endTime : Date.now();
+
+    // Find "last navigation URL" — prefer last DOM event with a url, fall back
+    // to last network event with a url, fall back to startUrl.
+    let lastUrl = null;
+    for (let i = dom.length - 1; i >= 0; i--) {
+      if (dom[i] && typeof dom[i].url === 'string') { lastUrl = dom[i].url; break; }
+    }
+    if (!lastUrl) {
+      for (let i = net.length - 1; i >= 0; i--) {
+        if (net[i] && typeof net[i].url === 'string') { lastUrl = net[i].url; break; }
+      }
+    }
+    if (!lastUrl) lastUrl = session.startUrl || '';
+    const lastUrlLower = (lastUrl || '').toLowerCase();
+
+    // Rule 1: success URL pattern
+    if (/\/(success|confirm|complete|done|thank|receipt)(\b|\/|\?)/.test(lastUrlLower)) {
+      push('url_success_pattern', 30, lastUrl);
+    }
+
+    // Rule 7 first (so we don't double-score on a /error URL): error URL keywords
+    if (/\/(error|fail|failed|denied)(\b|\/|\?)/.test(lastUrlLower) ||
+        /\/(4\d\d|5\d\d)(\b|\/|\?)/.test(lastUrlLower)) {
+      push('url_error_pattern', -40, lastUrl);
+    }
+
+    // Rule 2: last mutating API status
+    let lastMutation = null;
+    for (let i = net.length - 1; i >= 0; i--) {
+      const m = (net[i]?.method || '').toUpperCase();
+      if (m === 'POST' || m === 'PUT' || m === 'DELETE' || m === 'PATCH') {
+        lastMutation = net[i];
+        break;
+      }
+    }
+    if (lastMutation) {
+      const status = Number(lastMutation.responseStatus);
+      if (status >= 200 && status < 300) {
+        push('last_mutation_2xx', 20, `${lastMutation.method} ${status}`);
+      } else if (status >= 400 && status < 600) {
+        push('last_mutation_err', -30, `${lastMutation.method} ${status}`);
+      }
+    }
+
+    // Rule 3: page settled — no DOM events in final 2s before stop
+    const settledWindowStart = endTime - 2000;
+    const eventsInSettleWindow = dom.filter(d => {
+      const ts = typeof d?.timestamp === 'number' ? d.timestamp : null;
+      return ts !== null && ts >= settledWindowStart && ts <= endTime;
+    });
+    if (eventsInSettleWindow.length === 0 && dom.length > 0) {
+      push('page_settled_2s', 10, 'no DOM activity in final 2s');
+    }
+
+    // Rule 4: no 4xx/5xx network errors in last 10s
+    const errorWindowStart = endTime - 10000;
+    const recentErrors = net.filter(n => {
+      const ts = typeof n?.timestamp === 'number' ? n.timestamp : null;
+      const s = Number(n?.responseStatus);
+      return ts !== null && ts >= errorWindowStart && ts <= endTime && s >= 400 && s < 600;
+    });
+    if (recentErrors.length === 0 && net.length > 0) {
+      push('no_errors_last_10s', 10, null);
+    }
+
+    // Rule 5: success-keyword query string OR numeric resource ID after path action
+    if (/[?&](success|ok|result)=(true|ok|1|success)\b/i.test(lastUrl) ||
+        /\/(order|orders|invoice|invoices|receipt|receipts|payment|payments|confirmation)\/\d+/i.test(lastUrl)) {
+      push('url_success_keyword_or_id', 10, lastUrl);
+    }
+
+    // Rule 6: at least one mutation occurred (workflow did SOMETHING)
+    const anyMutation = net.some(n => {
+      const m = (n?.method || '').toUpperCase();
+      return m === 'POST' || m === 'PUT' || m === 'DELETE' || m === 'PATCH';
+    });
+    if (anyMutation) {
+      push('mutation_occurred', 10, null);
+    }
+  } catch (_e) {
+    // Defensive: if anything blows up, return uncertain.
+    return { outcome: 'uncertain', confidence: 0.5, signals };
+  }
+
+  let outcome, confidence;
+  if (score >= 60) {
+    outcome = 'success';
+    confidence = Math.min(1, score / 100);
+  } else if (score < 20) {
+    outcome = 'failed';
+    // (40 - score) / 40, clamped — score=19 -> 0.525, score=-40 -> 1.0, score=40 -> 0.
+    // Boundary set to < 20 (not <= 20) so an ambient no-mutation browse
+    // (settled +10, no-errors +10 = exactly 20) lands in uncertain, not failed.
+    confidence = Math.max(0, Math.min(1, (40 - score) / 40));
+  } else {
+    outcome = 'uncertain';
+    confidence = 0.5;
+  }
+
+  return { outcome, confidence, signals };
+}

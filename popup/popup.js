@@ -62,7 +62,17 @@ async function init() {
     startPolling();
     startTimer();
   } else {
-    const lastSession = await sendMessage({ type: 'GET_LAST_SESSION' });
+    // v1.0.14 fix: read lastSession DIRECTLY from chrome.storage.local
+    // (popup has full chrome.* access — no need to round-trip via the SW,
+    // which can be busy or unwake at this moment after stop-from-overlay).
+    let lastSession = null;
+    try {
+      const stored = await chrome.storage.local.get('lastSession');
+      lastSession = stored.lastSession || null;
+    } catch (e) {
+      console.warn('[AgentScribe] direct lastSession read failed, falling back to sendMessage:', e);
+      lastSession = await sendMessage({ type: 'GET_LAST_SESSION' });
+    }
     if (lastSession) {
       cachedLastSession = lastSession;
       showLastSession(lastSession);

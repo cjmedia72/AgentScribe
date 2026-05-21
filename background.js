@@ -1263,6 +1263,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'STOP_RECORDING_FROM_OVERLAY') {
+    // v1.0.14 fix: pre-write lastSession to storage BEFORE openPopup fires.
+    // This way when the popup opens (~300ms later) and reads chrome.storage.
+    // local.get('lastSession') directly, it gets the fresh session info
+    // INSTANTLY instead of waiting for the heavy stopRecording chain to
+    // finish writing it. Synchronous-style (kick off, don't await).
+    if (sessionBuffer && (domBuffer.length > 0 || networkBuffer.length > 0)) {
+      try {
+        const earlyName = (() => {
+          try { return inferSessionName(sessionBuffer); }
+          catch { return sessionBuffer.name || 'Untitled Session'; }
+        })();
+        const earlyPreview = {
+          ...sessionBuffer,
+          name: earlyName,
+          endTime: Date.now(),
+          events: domBuffer.slice(),
+          networkEvents: networkBuffer.slice(),
+          eventCount: domBuffer.length,
+          _stoppingInProgress: true
+        };
+        // Fire-and-forget — slim is fast (in-memory transform), the .set is
+        // the async part but it should land within ~50-150ms.
+        const earlySlim = slimSessionForStorage(earlyPreview);
+        chrome.storage.local.set({ lastSession: earlySlim, isRecording: false })
+          .catch(e => console.warn('[AgentScribe] Pre-popup lastSession write failed:', e?.message || e));
+      } catch (e) {
+        console.warn('[AgentScribe] Pre-popup preview build failed:', e?.message || e);
+      }
+    }
+
     // CRITICAL ORDER: open the popup BEFORE any await. The user-gesture
     // context propagated from the overlay click is fragile — if we await
     // stopRecording first (CDP detach + storage write can take 10-60s on

@@ -974,6 +974,37 @@ async function _stopRecordingImpl() {
     return { success: false, reason: 'no_session' };
   }
 
+  // v1.0.14 fix: EARLY lastSession write so the popup (opened via
+  // stop-from-overlay) gets its "Last session: 7s | 9 events | 28 API calls"
+  // row and EXPORT LAST SESSION button within ~500ms instead of 10-15s.
+  // The popup has a chrome.storage.onChanged listener that fires the moment
+  // lastSession lands. Heavy enrichment (correlation, auth profile, outcome,
+  // slim) continues below — the final write will OVERWRITE this with the
+  // enriched version, so the export button reflects the full data by then.
+  try {
+    const earlyName = (() => {
+      try { return inferSessionName(sessionBuffer); }
+      catch { return sessionBuffer.name || 'Untitled Session'; }
+    })();
+    const earlyPreview = {
+      ...sessionBuffer,
+      name: earlyName,
+      endTime: Date.now(),
+      eventCount: (domBuffer || []).length,
+      _stoppingInProgress: true
+    };
+    // Slim the early write so we don't accidentally trigger the same write
+    // failure mode the full finalize protects against.
+    const earlySlim = slimSessionForStorage(earlyPreview);
+    await chrome.storage.local.set({
+      lastSession: earlySlim,
+      isRecording: false
+    });
+  } catch (e) {
+    console.warn('[AgentScribe] Early lastSession write failed:', e?.message || e);
+    // Continue — final write below will land regardless.
+  }
+
   const result = correlate(domBuffer, networkBuffer, correlationWindowMs);
   sessionBuffer.events = result.domEvents;
   sessionBuffer.networkEvents = result.networkEvents;
